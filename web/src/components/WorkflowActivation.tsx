@@ -167,7 +167,7 @@ export function WorkflowActivationPanel({
               account_id: accountId,
               spec,
             },
-            smokeIdempotencyKey(workflow.id, projectId, smokeBody.assetIds),
+            smokeIdempotencyKey(workflow.id, projectId, smokeBody.assetIds, terminalSmokeJobId(snapshot)),
           );
           if (!isCurrent(token)) return;
           snapshot = await refresh(token);
@@ -231,13 +231,19 @@ export function WorkflowActivationPanel({
           { real_enabled: snapshot.real_enabled, offline_mode: false },
           accounts,
           null,
+          true,
         );
         if (request.provider !== 'colab') {
           throw new Error('没有已启用且已连接 Colab 的账号，无法读取真实 GPU 规格');
         }
-        const eligible = selectEligibleColabGpuSpec(await getGpuComputeSpecs('colab', request.accountId));
+        const requiredSpec = workflow.manifest?.compute_spec;
+        const eligible = selectEligibleColabGpuSpec(
+          await getGpuComputeSpecs('colab', request.accountId), requiredSpec,
+        );
         if (!isCurrent(token)) return;
-        if (!eligible) throw new Error('当前账号没有可用的真实 GPU 规格（已过滤 CPU/TPU）');
+        if (!eligible) throw new Error(requiredSpec
+          ? '当前账号没有可用的模板指定 GPU 规格，请检查 Colab 账号支持的显卡。'
+          : '当前账号没有可用的真实 GPU 规格（已过滤 CPU/TPU）');
         setAccountId(request.accountId);
         setSpec(eligible);
       } catch (err) {
@@ -251,7 +257,7 @@ export function WorkflowActivationPanel({
       aliveRef.current = false;
       executionRef.current += 1;
     };
-  }, [isCurrent, refresh, say, waitForSmoke]);
+  }, [isCurrent, refresh, say, waitForSmoke, workflow.manifest?.compute_spec]);
 
   useEffect(() => {
     if (!projectId) {

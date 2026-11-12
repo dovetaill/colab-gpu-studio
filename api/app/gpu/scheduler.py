@@ -22,6 +22,7 @@ from .compute import (
     default_provider_factory,
 )
 from .google import GoogleError
+from .instances import BudgetError
 from .mcp import MCPError
 from .newgpu.executor_plugins import TrustedExecutorAdapter
 from .prep import PREP_SPEC_KEY, cache_key, create_prep_job, prep_idempotency_key, prep_jobs_for
@@ -65,6 +66,21 @@ _PREP_TEXT = {
     "GPU outputs persisted": "缓存已保存到 Drive",
     "GPU cleanup completed": "CPU 运行时已关闭（缓存保留在 Drive）",
     "GPU cleanup is pending": "正在关闭 CPU 运行时",
+}
+
+_BUDGET_ERRORS = {
+    "real GPU allocation requires an explicit unit_rate": "服务端尚未配置 GPU 估算费率，请联系管理员设置 GPU_UNIT_RATE。",
+    "GPU unit_rate is invalid": "服务端 GPU 估算费率无效，请联系管理员检查 GPU_UNIT_RATE。",
+    "GPU unit_rate must be finite and positive": "服务端 GPU 估算费率必须为有效的正数，请联系管理员检查 GPU_UNIT_RATE。",
+    "GPU budget estimate is invalid": "任务预算估算无效，请检查运行时间与费率设置。",
+    "GPU budget exceeded": "任务预计用量超过单任务预算上限，请联系管理员检查 GPU_MAX_JOB_UNITS。",
+    "GPU account budget is not configured": "所选 Google 账号未设置每日安全预算，请到「设置 → 账号目录」填写后重试。",
+    "GPU account budget is invalid": "所选 Google 账号的安全预算无效，请到「设置 → 账号目录」检查。",
+    "GPU global budget is not configured": "服务端未配置全局 GPU 预算，请联系管理员检查预算设置。",
+    "GPU account budget exceeded": "所选 Google 账号的日/月安全预算不足，请检查账号预算及已有任务用量。",
+    "GPU global budget exceeded": "服务端 GPU 日/月预算不足，请检查全局预算及已有任务用量。",
+    "real GPU retention requires a positive unit_rate": "保留 GPU 实例需要有效的正数费率，请联系管理员检查 GPU_UNIT_RATE。",
+    "GPU account is not configured": "GPU 实例所属账号不存在，请检查账号目录。",
 }
 
 
@@ -644,6 +660,10 @@ class Scheduler:
     @staticmethod
     def _safe_error(exc: Exception) -> str:
         """Expose only messages from deliberately safe adapter exception classes."""
+        if isinstance(exc, BudgetError):
+            # Only fixed domain messages are disclosed; arbitrary exception
+            # text may contain credentials or provider responses.
+            return _BUDGET_ERRORS.get(str(exc), "GPU 预算校验失败，请检查账号及全局预算设置。")
         if not isinstance(exc, (ComputeError, GoogleError, MCPError)):
             logging.getLogger(__name__).warning("unexpected GPU error: %s: %s", type(exc).__name__, str(exc)[:300])
             return f"GPU operation failed ({type(exc).__name__})"

@@ -123,3 +123,13 @@ test('workflow activation selects eligible GPU and preserves its structured key'
   assert.deepEqual(selectEligibleColabGpuSpec([cpu, tpu, gpu]), gpu);
   assert.notStrictEqual(selectEligibleColabGpuSpec([cpu, tpu, gpu]).key, String(gpu.key));
 });
+
+test('workflow activation selects its pinned GPU instead of the first eligible spec', () => {
+  const a100 = { key: { variant: 'VARIANT_GPU', accelerator: 'A100', shape: 'SHAPE_HIGHMEM' }, eligible: true };
+  const t4Highmem = { key: { variant: 'VARIANT_GPU', accelerator: 'T4', shape: 'SHAPE_HIGHMEM' }, eligible: true };
+  const t4 = { key: { variant: 'VARIANT_GPU', accelerator: 'T4', shape: 'SHAPE_STANDARD' }, eligible: true };
+  const pinned = { variant: 'VARIANT_GPU', accelerator: 'T4', shape: 'SHAPE_STANDARD' };
+  assert.deepEqual(selectEligibleColabGpuSpec([a100, t4Highmem, t4], pinned), t4);
+  assert.equal(selectEligibleColabGpuSpec([a100, t4Highmem, { ...t4, eligible: false }], pinned), null);
+  assert.equal(selectEligibleColabGpuSpec([a100], 'T4'), null);
+});

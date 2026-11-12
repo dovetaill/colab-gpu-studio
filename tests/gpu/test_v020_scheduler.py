@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.db import Store
 from app.gpu.compute import MockColabProvider, MockGPUExecutor
+from app.gpu.instances import BudgetError
 from app.gpu.repository import Repository
 from app.gpu.scheduler import Scheduler
 
@@ -103,6 +104,23 @@ def make_job(repo, *, key="job", lifecycle="retain"):
         },
         key,
     )[0]
+
+
+def test_budget_rejection_reports_a_useful_safe_reason_without_allocating_a_lease():
+    class MissingBudgetService(FakeInstanceService):
+        def allocate(self, job):
+            raise BudgetError("GPU account budget is not configured")
+
+    repo = Repository(Store("sqlite:///:memory:"))
+    job = make_job(repo)
+    scheduler = Scheduler(repo, instance_service=MissingBudgetService())
+    failed = run_to_terminal(scheduler, repo, job["id"])
+
+    assert failed["state"] == "failed"
+    assert "未设置每日安全预算" in failed["error_message"]
+    assert "账号目录" in failed["error_message"]
+    assert repo.list("leases", "owner-1") == []
+    assert "private-token-value" not in scheduler._safe_error(BudgetError("private-token-value"))
 
 
 def run_to_terminal(scheduler, repo, job_id, limit=40):

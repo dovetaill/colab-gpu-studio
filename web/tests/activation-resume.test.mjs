@@ -10,6 +10,7 @@ import {
   isSmokePolling,
   shouldCreateSmoke,
   shouldAcceptSmoke,
+  smokeIdempotencyKey,
   terminalSmokeJobId,
 } from '../src/lib/activation-resume.ts';
 
@@ -58,6 +59,23 @@ test('failed smoke is not treated as a resumable completed task', () => {
   assert.equal(hasExistingSmoke(current), false);
   assert.equal(shouldCreateSmoke(current), true);
   assert.equal(shouldAcceptSmoke(current), false);
+});
+
+test('a failed smoke gets a new stable idempotency key for the next attempt', () => {
+  const values = new Map();
+  globalThis.sessionStorage = {
+    getItem: (key) => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  try {
+    const initial = smokeIdempotencyKey('wf', 'project', []);
+    const retry = smokeIdempotencyKey('wf', 'project', [], 'failed-job');
+    assert.notEqual(retry, initial);
+    assert.equal(smokeIdempotencyKey('wf', 'project', [], 'failed-job'), retry);
+    assert.notEqual(smokeIdempotencyKey('wf', 'project', [], 'failed-again'), retry);
+  } finally {
+    delete globalThis.sessionStorage;
+  }
 });
 
 test('terminal smoke snapshots expose the persisted task for detail/log opening', () => {

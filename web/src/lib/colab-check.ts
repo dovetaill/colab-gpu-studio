@@ -62,11 +62,16 @@ export function resolveGpuCheckRequest(
   return { provider: 'colab', accountId: account.account_id };
 }
 
-/** Keep the complete official spec object; never stringify its structured key. */
-export function selectEligibleColabGpuSpec(specs: ComputeSpec[]): ComputeSpec | null {
+/** Preserve the official spec and honor the workflow's exact requested key. */
+export function selectEligibleColabGpuSpec(specs: ComputeSpec[], requiredKey?: unknown): ComputeSpec | null {
+  if (requiredKey != null && (typeof requiredKey !== 'object' || Array.isArray(requiredKey))) return null;
+  const required = requiredKey as Record<string, unknown> | null | undefined;
   return specs.find((spec) => {
     if (spec.eligible !== true || !spec.key || typeof spec.key !== 'object' || Array.isArray(spec.key)) return false;
-    const variant = String((spec.key as Record<string, unknown>).variant || '');
-    return variant === 'VARIANT_GPU' || variant === 'GPU';
+    const key = spec.key as Record<string, unknown>;
+    const variant = String(key.variant || '');
+    if (variant !== 'VARIANT_GPU' && variant !== 'GPU') return false;
+    return !required || (Object.keys(key).length === Object.keys(required).length
+      && Object.keys(required).every((field) => key[field] === required[field]));
   }) || null;
 }

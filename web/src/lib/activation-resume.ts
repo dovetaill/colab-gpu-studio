@@ -141,8 +141,12 @@ export function writeActivationWatch(value: Record<string, ActivationWatch>): vo
   try { sessionStorage.setItem(WATCH_KEY, JSON.stringify(value)); } catch { /* storage can be unavailable */ }
 }
 
-export function smokeIdempotencyKey(workflowId: string, projectId: string, assetIds: string[]): string {
-  const signature = `${workflowId}:${projectId}:${[...assetIds].sort().join(',')}`;
+export function smokeIdempotencyKey(
+  workflowId: string, projectId: string, assetIds: string[], failedJobId?: string | null,
+): string {
+  // A failed attempt needs a new key, while retries of an uncertain request
+  // following that same failure must keep using the same key.
+  const signature = `${workflowId}:${projectId}:${[...assetIds].sort().join(',')}${failedJobId ? `:retry:${failedJobId}` : ''}`;
   const storageKey = `studio-smoke-idem:${signature}`;
   try {
     const existing = sessionStorage.getItem(storageKey);
