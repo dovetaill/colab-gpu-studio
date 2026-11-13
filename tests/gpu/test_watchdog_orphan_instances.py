@@ -61,6 +61,49 @@ class InspectOnlyColab(GoogleColabProvider):
         pytest.fail("an empty account-wide runtime list is not deletion evidence")
 
 
+def test_stopped_terminal_job_cleanup_uses_lease_account(tmp_path):
+    """A retained machine must be released with its own account after its job ends."""
+    repo = Repository(Store(f"sqlite:///{tmp_path / 'account-cleanup.sqlite'}"))
+    repo.create("jobs", "owner", {
+        "state": "completed", "provider": "colab", "account_id": "machine-account",
+        "instance_id": "instance", "lease_id": "lease",
+    }, record_id="job")
+    repo.create("instances", "owner", {
+        "state": "cleanup_pending", "provider": "colab", "account_id": "machine-account",
+        "current_job_id": None, "lease_id": "lease", "manual_stop_requested": True,
+    }, record_id="instance")
+    repo.create("leases", "owner", {
+        "state": "cleanup_pending", "provider": "colab", "account_id": "machine-account",
+        "instance_id": "instance", "owner_job_id": "job", "request_id": "request",
+        "runtime_id": "studio-owned", "deadline_epoch": 900, "create_attempts": 1,
+        "operation_done": True,
+    }, record_id="lease")
+
+    calls = []
+
+    class Provider:
+        def inspect(self, handle):
+            calls.append(("inspect", handle["runtime_name"]))
+            return {"deleted": False}
+
+        def delete(self, handle):
+            calls.append(("delete", handle["runtime_name"]))
+            return True
+
+    def provider_for(job):
+        calls.append(("account", job.get("account_id")))
+        if job.get("account_id") != "machine-account":
+            raise RuntimeError("wrong account")
+        return Provider()
+
+    scheduler = Scheduler(repo, provider_factory=provider_for, clock=lambda: 1000)
+    assert scheduler.watchdog()["recovered"] == 1
+    assert calls == [("account", "machine-account"), ("inspect", "runtimes/studio-owned"),
+                     ("delete", "runtimes/studio-owned")]
+    assert repo.get("leases", "lease", "owner")["state"] == "deleted"
+    assert repo.get("instances", "instance", "owner")["state"] == "deleted"
+
+
 def assert_budget(scheduler, reserved):
     with scheduler.db_store.Session() as session:
         assert scheduler.instances._budget_totals(session, "owner", "account") == (reserved, reserved)

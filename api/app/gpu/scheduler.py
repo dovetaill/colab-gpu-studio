@@ -1619,6 +1619,9 @@ class Scheduler:
             "id": owner_job_id,
             "owner_id": owner_id,
             "provider": lease.get("provider", "mock"),
+            # Cleanup must use the same account that owns the lease.  The
+            # terminal job is not necessarily loaded during orphan recovery.
+            "account_id": lease.get("account_id"),
             "instance_id": instance_id,
         }
         handle = self._lease_handle(lease) or self._intent_handle(job, lease)
@@ -1646,6 +1649,7 @@ class Scheduler:
         if claimed:
             lease = claimed[0]
             instance = claimed[1]
+            job["account_id"] = lease.get("account_id")
             job["instance_id"] = instance_id
             if instance and instance.get("version") is not None:
                 job["_cleanup_instance_version"] = instance["version"]

@@ -48,7 +48,7 @@ export function SettingsPanel({
   const [view, setView] = useState<'main' | 'workflows'>('main');
   const [oauthConfigured, setOauthConfigured] = useState(false);
 
-  const activeCount = Number(usage?.active_runtimes ?? 0);
+  const activeCount = usage?.active_runtimes == null ? '—' : String(usage.active_runtimes);
   const dailyCap = Number(usage?.daily_limit || settings?.budget?.daily_units || 0);
   const used = Number(usage?.actual_units || usage?.estimated_units || 0);
   const pct = dailyCap > 0 ? Math.min(100, Math.round((used / dailyCap) * 100)) : 0;
@@ -80,7 +80,7 @@ export function SettingsPanel({
 
       <Card icon={<Gauge size={17} strokeWidth={1.6} aria-hidden />} title="用量与额度" aside={<span className="pill">已用 {pct}%</span>}>
         <div className={styles.grid2}>
-          <div className={styles.statBox}><small className="muted">运行中任务</small><strong>{activeCount}</strong></div>
+          <div className={styles.statBox}><small className="muted">未确认释放的机器</small><strong>{activeCount}</strong></div>
           <div className={styles.statBox}><small className="muted">每日上限</small><strong>{dailyCap || '—'}<em> CU</em></strong></div>
           <div className={styles.statBox}><small className="muted">已用</small><strong>{cuNumber(used)}<em> CU</em></strong></div>
           <div className={styles.statBox}><small className="muted">使用率</small><strong>{pct}%</strong></div>

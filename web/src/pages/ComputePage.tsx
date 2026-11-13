@@ -30,12 +30,13 @@ export function ComputePage({
 }) {
   const [open, setOpen] = useState<string>('');
   const realEnabled = Boolean(settings?.real_enabled) && settings?.offline_mode !== true;
-  const activeCount = Number(usage?.active_runtimes ?? 0);
+  const activeCount = usage?.active_runtimes == null ? '—' : String(usage.active_runtimes);
   const estimated = usage?.estimated_units;
   const actual = usage?.actual_units;
   const limit = usage?.daily_limit || settings?.budget?.daily_units;
   const recon = usage?.reconciliation;
   const unresolved = (usage?.ccu?.anomalies || []).filter((item) => !item.resolved_at);
+  const cleanupPending = instances.filter((instance) => instance.state === 'cleanup_pending').length;
 
   return (
     <div className={styles.stack}>
@@ -48,9 +49,11 @@ export function ComputePage({
         <p className="muted small">{realEnabled ? '任务会在 Google Colab 的 GPU 上真实运行。' : '现在是本地模拟，不会连接 Colab，也不会扣 CU。'}</p>
         <div className={styles.triple}>
           <div><small className="muted">真实 GPU</small><strong>{realEnabled ? '已启用' : '未启用'}</strong></div>
-          <div><small className="muted">在线机器</small><strong>{activeCount}</strong></div>
+          <div><small className="muted">未确认释放的机器</small><strong>{activeCount}</strong></div>
           <div><small className="muted">文件存放</small><strong>{settings?.storage === 'drive' ? 'Google 云盘' : '本站服务器'}</strong></div>
         </div>
+        <p className="muted small">机器数依据本站尚未确认释放的记录统计，可能包含待清理的机器，并非 Google 的实时在线数。</p>
+        {cleanupPending > 0 && <p className="status error" role="status">有 {cleanupPending} 台机器待清理，Google 尚未确认释放。请检查对应账号的 Colab 授权，并到 Colab 的「运行时 → 管理会话」核实。</p>}
       </Card>
 
       <Card icon={<HardDrive size={17} strokeWidth={1.6} aria-hidden />} title="CU 用量">
@@ -58,7 +61,7 @@ export function ComputePage({
           <div className={styles.statBox}><small className="muted">今日预估</small><strong>{cuNumber(estimated)}<em> CU</em></strong>{!realEnabled && <small className="muted">模拟估算</small>}</div>
           <div className={styles.statBox}><small className="muted">实际扣除</small><strong>{cuNumber(actual)}<em> CU</em></strong>{(actual === null || actual === undefined) && <small className="muted">暂无数据</small>}</div>
           <div className={styles.statBox}><small className="muted">每日上限</small><strong>{shown(limit)}<em> CU</em></strong></div>
-          <div className={styles.statBox}><small className="muted">在线机器</small><strong>{activeCount}</strong></div>
+          <div className={styles.statBox}><small className="muted">未确认释放的机器</small><strong>{activeCount}</strong></div>
         </div>
         <p className="muted small">这里的数字是站内按用时估算的，不是 Google 账单。实际余额以 Colab 官网为准。</p>
       </Card>

@@ -292,10 +292,9 @@ export default function App() {
       getGpuWorkflows(),
       getGpuPresets(),
       getGpuSettings(),
-      getGpuUsage(),
     ]).then((results) => {
       if (!alive) return;
-      const [projR, modR, wfR, preR, setR, useR] = results;
+      const [projR, modR, wfR, preR, setR] = results;
       if (projR.status === 'fulfilled') {
         setProjects(projR.value);
         // Restore the last chosen project when it still exists; otherwise fall back to the first one.
@@ -322,7 +321,6 @@ export default function App() {
       }
       if (preR.status === 'fulfilled') setPresets(preR.value);
       if (setR.status === 'fulfilled') setSettings(setR.value);
-      if (useR.status === 'fulfilled') setUsage(useR.value);
     }).catch((cause) => alive && setError(apiMessage(cause)));
     return () => { alive = false; };
   }, [loggedIn, loginRefresh]);
@@ -330,21 +328,33 @@ export default function App() {
   useEffect(() => {
     if (!loggedIn) return;
     let alive = true;
+    let requestSequence = 0;
+    let settledSequence = 0;
+    const applied = { accounts: 0, instances: 0, usage: 0 };
     const refreshResources = async () => {
-      try {
-        const [accountResult, instanceResult] = await Promise.all([
-          apiFetch<unknown>('/api/gpu/accounts'),
-          listGpuInstances(),
-        ]);
-        if (!alive) return;
-        const nextAccounts = (Array.isArray(accountResult) ? accountResult : record(accountResult) && Array.isArray(accountResult.data) ? accountResult.data : []) as GpuAccount[];
-        const nextInstances = instanceResult as unknown as GpuInstance[];
-        setAccounts(uniqueBy(nextAccounts, (account) => account.account_id));
-        setInstances(uniqueBy(nextInstances, (instance) => instanceIdOf(instance)));
-        setResourceError('');
-      } catch (cause) {
-        if (alive) setResourceError(`账号/实例：${apiMessage(cause)}`);
-      }
+      const sequence = ++requestSequence;
+      const results = await Promise.allSettled([
+        apiFetch<unknown>('/api/gpu/accounts').then((result) => {
+          if (!alive || sequence < applied.accounts) return;
+          applied.accounts = sequence;
+          const nextAccounts = (Array.isArray(result) ? result : record(result) && Array.isArray(result.data) ? result.data : []) as GpuAccount[];
+          setAccounts(uniqueBy(nextAccounts, (account) => account.account_id));
+        }),
+        listGpuInstances().then((result) => {
+          if (!alive || sequence < applied.instances) return;
+          applied.instances = sequence;
+          setInstances(uniqueBy(result as unknown as GpuInstance[], (instance) => instanceIdOf(instance)));
+        }),
+        getGpuUsage().then((result) => {
+          if (!alive || sequence < applied.usage) return;
+          applied.usage = sequence;
+          setUsage(result);
+        }),
+      ]);
+      if (!alive || sequence < settledSequence) return;
+      settledSequence = sequence;
+      const failure = results.find((result) => result.status === 'rejected');
+      setResourceError(failure?.status === 'rejected' ? `账号/实例/用量：${apiMessage(failure.reason)}` : '');
     };
     resourceRefresh.current = () => void refreshResources();
     void refreshResources();
@@ -891,7 +901,7 @@ export default function App() {
             loadingCheck={loading === 'check'}
             specs={specs}
             specsNote={specsNote}
-            error={error}
+            error={error || resourceError}
           />
         )}
         {tab === '设置' && (
@@ -906,7 +916,7 @@ export default function App() {
             specsNote={specsNote}
             workflows={workflows}
             loading={loading}
-            error={error}
+            error={error || resourceError}
             onConnect={(purpose) => void action('connect', async () => {
               const url = await startGoogleAuth(purpose);
               if (url) window.location.href = url;
@@ -992,7 +1002,7 @@ export default function App() {
             onClick={(e) => e.stopPropagation()}
           >
             <h2>停止全部任务？</h2>
-            <p className="muted">会取消所有正在跑的任务，并关闭对应的 Colab GPU 机器。已经花掉的 CU 不会退回。</p>
+            <p className="muted">会请求取消所有正在跑的任务。空闲保留的机器需在实例中心单独停止；机器释放须等待 Google 确认。已经花掉的 CU 不会退回。</p>
             <div className="actions">
               <button className="button secondary" type="button" onClick={() => setConfirm(null)}>取消</button>
               <button className="button danger" type="button" onClick={() => void stopCompute()}>确认停止</button>
