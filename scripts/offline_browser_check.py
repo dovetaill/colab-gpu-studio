@@ -1,7 +1,7 @@
 """Real local browser + real local API/worker, with external browser traffic denied."""
 
-import os
 import json
+import os
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -41,10 +41,11 @@ with sync_playwright() as p:
     page.get_by_role("button", name="进入工作台").click()
     page.get_by_role("button", name="立即生成").wait_for()
     existing=context.request.get(BASE+'/api/gpu/jobs').json()['data']
-    if isinstance(existing,dict): existing=existing.get('items',existing.get('jobs',[]))
+    if isinstance(existing,dict):
+        existing=existing.get('items',existing.get('jobs',[]))
     baseline_ids={job['id'] for job in existing}
     page.get_by_label("生成数量", exact=True).fill("3")
-    page.get_by_label("运行策略", exact=True).select_option("batch")
+    page.locator("#runtime-lifecycle").select_option("batch")
     page.get_by_role("button", name="立即生成").click()
     with page.expect_response(lambda response: response.request.method=='POST' and response.url.endswith('/api/gpu/batches')) as submitted:
         page.get_by_role("dialog", name="确认提交任务").get_by_role("button", name="确认启动").evaluate("button=>{button.click();button.click()}")
@@ -58,14 +59,17 @@ with sync_playwright() as p:
         response=context.request.get(BASE+'/api/gpu/jobs')
         assert response.ok,response.text()
         job_rows=response.json()['data']
-        if isinstance(job_rows,dict): job_rows=job_rows.get('items',job_rows.get('jobs',[]))
+        if isinstance(job_rows,dict):
+            job_rows=job_rows.get('items',job_rows.get('jobs',[]))
         job_rows=[job for job in job_rows if job['id'] not in baseline_ids]
-        if len(job_rows)==3 and all(job['state']=='completed' for job in job_rows): break
+        if len(job_rows)==3 and all(job['state']=='completed' for job in job_rows):
+            break
         page.wait_for_timeout(150)
     assert len(job_rows)==3 and all(job['state']=='completed' for job in job_rows),job_rows
     report['completed_mock_jobs']=len(job_rows)
     gallery=context.request.get(BASE+'/api/gpu/gallery').json()['data']
-    if isinstance(gallery,dict): gallery=gallery.get('items',gallery.get('assets',[]))
+    if isinstance(gallery,dict):
+        gallery=gallery.get('items',gallery.get('assets',[]))
     assert len(gallery)>=3,gallery
     report['mock_gallery_assets']=len(gallery)
 

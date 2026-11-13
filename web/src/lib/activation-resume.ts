@@ -104,14 +104,18 @@ export function missingActivationInputs(inputs: ActivationInputSpec[], values: R
     .map((input) => input.label || input.key);
 }
 
-export function activationSmokeParams(inputs: ActivationInputSpec[], values: Record<string, string>): { params: Record<string, string>; assetIds: string[] } {
-  const params: Record<string, string> = {};
+export function activationSmokeParams(inputs: ActivationInputSpec[], values: Record<string, string>): { params: Record<string, string | number>; assetIds: string[] } {
+  const params: Record<string, string | number> = {};
   const assetIds: string[] = [];
   for (const input of inputs) {
     const value = values[input.key];
     if (!value) continue;
-    params[input.key] = value;
-    if (!assetIds.includes(value)) assetIds.push(value);
+    if (input.type === 'number' || input.type === 'integer') {
+      params[input.key] = Number(value);
+    } else {
+      params[input.key] = value;
+      if (!assetIds.includes(value)) assetIds.push(value);
+    }
   }
   return { params, assetIds };
 }

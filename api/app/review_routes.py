@@ -30,6 +30,7 @@ from .gpu.rates import mode_param
 from .gpu.repository import Repository
 from .gpu.runtime_worker import REVIEWED_CUSTOM_NODES, _reviewed_custom_nodes, _validate_weights
 from .gpu.scheduler import Scheduler
+from .gpu.vace_video import resolve_video_input
 from .storage import read_asset
 
 router = APIRouter(prefix="/api/gpu")
@@ -298,6 +299,10 @@ def activation_inputs(manifest: Mapping | None) -> list[dict]:
         if not isinstance(spec, Mapping):
             continue
         kind = str(spec.get("type") or "string")
+        if manifest.get("workflow_key") == "wan21-vace-v2v" and name == "start_seconds":
+            rows.append({"key": name, "label": str(spec.get("label") or name), "type": kind,
+                         "required": False, "default": spec.get("default", 0)})
+            continue
         optional_image = kind == "image" and spec.get("required") is False
         needs_value = "default" not in spec and (kind == "image" or spec.get("required") is True)
         if kind != "image" and not needs_value:
@@ -648,6 +653,9 @@ def real_smoke(
     bind_params, input_files = resolve_input_images(
         lambda aid: own(st, "assets", aid, user), project["id"], row["manifest"], params
     )
+    bind_params, input_video = resolve_video_input(
+        lambda aid: own(st, "assets", aid, user), project["id"], row["manifest"], bind_params
+    )
     try:
         bound = bind_parameters(row["manifest"], row["api_graph"], bind_params)
     except (TypeError, ValueError) as exc:
@@ -715,6 +723,7 @@ def real_smoke(
         **snapshot_parts,
         "bound_graph": bound,
         "input_files": input_files,
+        **({"input_video": input_video} if input_video else {}),
         "resolved_params": params,
         "workflow_sha256": row.get("sha256"),
         "model_revision": model.get("revision"),

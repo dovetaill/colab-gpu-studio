@@ -1,0 +1,1186 @@
+{
+  "workflow_key": "wan21-vace-v2v",
+  "model_id": "wan21-vace-1.3b",
+  "model": {
+    "model_id": "wan21-vace-1.3b",
+    "display_name": "Wan2.1 VACE 1.3B",
+    "revision": "ef09fd840388d354dcaeacef6a89ed9edec9fef4",
+    "source": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+    "license": "Apache-2.0",
+    "modality": "video",
+    "resource_profile": {
+      "disk_gb": 20,
+      "weights_gb": 11.3,
+      "min_vram_gb": 24,
+      "min_ram_gb": 16
+    },
+    "variants": [
+      "1.3B fp16，480p，Canny；显存和运行时间须实测"
+    ]
+  },
+  "manifest": {
+    "workflow_key": "wan21-vace-v2v",
+    "model_id": "wan21-vace-1.3b",
+    "version": "1.0.0",
+    "title": "Wan2.1 VACE 1.3B 视频重绘",
+    "description": "读取所选原视频片段，以 Canny 边缘控制动作和构图；可选单张参考图。真实 GPU 尚需冒烟验收。",
+    "modality": "video",
+    "executor": "comfyui",
+    "compute_spec": {
+      "variant": "VARIANT_GPU",
+      "accelerator": "L4",
+      "shape": "SHAPE_STANDARD"
+    },
+    "max_runtime_minutes": 45,
+    "parameters": {
+      "video_asset_id": {
+        "type": "video",
+        "label": "原视频",
+        "required": true,
+        "binding": {
+          "node": "1",
+          "input": "file"
+        }
+      },
+      "reference_image": {
+        "type": "image",
+        "label": "人物或画风参考图",
+        "required": false,
+        "description": "仅使用一张参考图；不保证身份一致。",
+        "binding": {
+          "node": "4",
+          "input": "image"
+        }
+      },
+      "prompt": {
+        "type": "string",
+        "label": "提示词",
+        "default": "Two men at a Chinese street fruit stall, a dramatic confrontation over a watermelon. Preserve the original video composition, camera movement, character positions, body movement, facial expressions, action timing and scene continuity. Original dramatic action manga aesthetics, bold black ink outlines, angular facial features, intense cel shading, deep black shadows, heavy cross-hatching, dramatic purple and gold color palette, exaggerated expressions, supernatural aura, dynamic speed lines, strong perspective, coherent animation, consistent characters and costumes. Maintain the original scene structure and action sequence. Do not introduce new dialogue.",
+        "required": true,
+        "binding": {
+          "node": "14",
+          "input": "text"
+        }
+      },
+      "negative_prompt": {
+        "type": "string",
+        "label": "负向提示词",
+        "default": "photorealistic, realistic live action, blurry details, low quality, inconsistent face, identity drift, unstable clothing, extra fingers, extra limbs, deformed anatomy, duplicated characters, random scene changes, flickering, distorted watermelon, unreadable text, watermark, unwanted subtitles",
+        "advanced": true,
+        "binding": {
+          "node": "15",
+          "input": "text"
+        }
+      },
+      "start_seconds": {
+        "type": "number",
+        "label": "片段起点（秒）",
+        "default": 0.0,
+        "min": 0,
+        "max": 3600,
+        "stage": "video_preprocess"
+      },
+      "length": {
+        "type": "integer",
+        "label": "生成帧数",
+        "default": 49,
+        "min": 17,
+        "max": 81,
+        "step": 4,
+        "description": "必须为 4n+1；选中时长为帧数除以帧率。",
+        "binding": {
+          "node": "16",
+          "input": "length"
+        }
+      },
+      "fps": {
+        "type": "number",
+        "label": "帧率",
+        "default": 16.0,
+        "min": 8,
+        "max": 24,
+        "step": 1,
+        "binding": {
+          "node": "20",
+          "input": "fps"
+        }
+      },
+      "width": {
+        "type": "integer",
+        "label": "宽",
+        "default": 832,
+        "min": 256,
+        "max": 832,
+        "step": 16,
+        "binding": {
+          "node": "16",
+          "input": "width"
+        }
+      },
+      "height": {
+        "type": "integer",
+        "label": "高",
+        "default": 480,
+        "min": 256,
+        "max": 832,
+        "step": 16,
+        "binding": {
+          "node": "16",
+          "input": "height"
+        }
+      },
+      "strength": {
+        "type": "number",
+        "label": "边缘控制强度",
+        "default": 1.0,
+        "min": 0.1,
+        "max": 2.0,
+        "step": 0.05,
+        "binding": {
+          "node": "16",
+          "input": "strength"
+        }
+      },
+      "steps": {
+        "type": "integer",
+        "label": "采样步数",
+        "default": 20,
+        "min": 4,
+        "max": 40,
+        "advanced": true,
+        "binding": {
+          "node": "17",
+          "input": "steps"
+        }
+      },
+      "seed": {
+        "type": "integer",
+        "label": "随机种子",
+        "default": -1,
+        "min": 0,
+        "max": 4294967295,
+        "advanced": true,
+        "binding": {
+          "node": "17",
+          "input": "seed"
+        }
+      },
+      "keep_audio": {
+        "type": "boolean",
+        "label": "保留原音轨",
+        "default": true,
+        "stage": "video_preprocess"
+      }
+    },
+    "dependencies": {
+      "comfyui_commit": "423cbd20511becb1f16122ab518e92e58bfa03d9",
+      "custom_nodes": [],
+      "weight_files": [
+        {
+          "repo_id": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+          "filename": "split_files/diffusion_models/wan2.1_vace_1.3B_fp16.safetensors",
+          "revision": "ef09fd840388d354dcaeacef6a89ed9edec9fef4",
+          "sha256": "640ccc0577e6a5d4bb15cd91b11b699ef914fc55f126c5a1c544e152130784f2",
+          "size": 4309519800,
+          "target": "diffusion_models/wan2.1_vace_1.3B_fp16.safetensors"
+        },
+        {
+          "repo_id": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+          "filename": "split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+          "revision": "ef09fd840388d354dcaeacef6a89ed9edec9fef4",
+          "sha256": "c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68",
+          "size": 6735906897,
+          "target": "text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+        },
+        {
+          "repo_id": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+          "filename": "split_files/vae/wan_2.1_vae.safetensors",
+          "revision": "ef09fd840388d354dcaeacef6a89ed9edec9fef4",
+          "sha256": "2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b",
+          "size": 253815318,
+          "target": "vae/wan_2.1_vae.safetensors"
+        }
+      ]
+    },
+    "manifest_version": 1,
+    "node_allowlist": [
+      "CLIPLoader",
+      "CLIPTextEncode",
+      "Canny",
+      "CreateVideo",
+      "GetVideoComponents",
+      "KSampler",
+      "LoadImage",
+      "LoadVideo",
+      "ModelSamplingSD3",
+      "SaveVideo",
+      "TrimVideoLatent",
+      "UNETLoader",
+      "VAEDecode",
+      "VAELoader",
+      "WanVaceToVideo"
+    ],
+    "comfyui_commit": "423cbd20511becb1f16122ab518e92e58bfa03d9",
+    "comfy_commit": "423cbd20511becb1f16122ab518e92e58bfa03d9",
+    "custom_nodes": [],
+    "weight_files": [
+      {
+        "repo_id": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+        "filename": "split_files/diffusion_models/wan2.1_vace_1.3B_fp16.safetensors",
+        "revision": "ef09fd840388d354dcaeacef6a89ed9edec9fef4",
+        "sha256": "640ccc0577e6a5d4bb15cd91b11b699ef914fc55f126c5a1c544e152130784f2",
+        "size": 4309519800,
+        "target": "diffusion_models/wan2.1_vace_1.3B_fp16.safetensors"
+      },
+      {
+        "repo_id": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+        "filename": "split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "revision": "ef09fd840388d354dcaeacef6a89ed9edec9fef4",
+        "sha256": "c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68",
+        "size": 6735906897,
+        "target": "text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+      },
+      {
+        "repo_id": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+        "filename": "split_files/vae/wan_2.1_vae.safetensors",
+        "revision": "ef09fd840388d354dcaeacef6a89ed9edec9fef4",
+        "sha256": "2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b",
+        "size": 253815318,
+        "target": "vae/wan_2.1_vae.safetensors"
+      }
+    ]
+  },
+  "api_graph": {
+    "1": {
+      "class_type": "LoadVideo",
+      "inputs": {
+        "file": "input_video.mp4"
+      }
+    },
+    "2": {
+      "class_type": "GetVideoComponents",
+      "inputs": {
+        "video": [
+          "1",
+          0
+        ]
+      }
+    },
+    "3": {
+      "class_type": "Canny",
+      "inputs": {
+        "image": [
+          "2",
+          0
+        ],
+        "low_threshold": 0.4,
+        "high_threshold": 0.8
+      }
+    },
+    "4": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "input_reference_image.jpg"
+      }
+    },
+    "10": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "wan2.1_vace_1.3B_fp16.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "11": {
+      "class_type": "ModelSamplingSD3",
+      "inputs": {
+        "model": [
+          "10",
+          0
+        ],
+        "shift": 8.0
+      }
+    },
+    "12": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "type": "wan",
+        "device": "default"
+      }
+    },
+    "13": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "wan_2.1_vae.safetensors"
+      }
+    },
+    "14": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "12",
+          0
+        ],
+        "text": "Original dramatic action manga."
+      }
+    },
+    "15": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "12",
+          0
+        ],
+        "text": "photorealistic, low quality"
+      }
+    },
+    "16": {
+      "class_type": "WanVaceToVideo",
+      "inputs": {
+        "positive": [
+          "14",
+          0
+        ],
+        "negative": [
+          "15",
+          0
+        ],
+        "vae": [
+          "13",
+          0
+        ],
+        "width": 832,
+        "height": 480,
+        "length": 49,
+        "batch_size": 1,
+        "strength": 1.0,
+        "control_video": [
+          "3",
+          0
+        ],
+        "reference_image": [
+          "4",
+          0
+        ]
+      }
+    },
+    "17": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "11",
+          0
+        ],
+        "seed": 0,
+        "steps": 20,
+        "cfg": 5.0,
+        "sampler_name": "uni_pc",
+        "scheduler": "simple",
+        "positive": [
+          "16",
+          0
+        ],
+        "negative": [
+          "16",
+          1
+        ],
+        "latent_image": [
+          "16",
+          2
+        ],
+        "denoise": 1.0
+      }
+    },
+    "18": {
+      "class_type": "TrimVideoLatent",
+      "inputs": {
+        "samples": [
+          "17",
+          0
+        ],
+        "trim_amount": [
+          "16",
+          3
+        ]
+      }
+    },
+    "19": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "18",
+          0
+        ],
+        "vae": [
+          "13",
+          0
+        ]
+      }
+    },
+    "20": {
+      "class_type": "CreateVideo",
+      "inputs": {
+        "images": [
+          "19",
+          0
+        ],
+        "fps": 16.0
+      }
+    },
+    "21": {
+      "class_type": "SaveVideo",
+      "inputs": {
+        "video": [
+          "20",
+          0
+        ],
+        "filename_prefix": "video/Wan_VACE",
+        "format": "auto",
+        "format.codec": "auto"
+      }
+    }
+  },
+  "object_info": {
+    "UNETLoader": {
+      "input": {
+        "required": {
+          "unet_name": [
+            [
+              "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
+            ]
+          ],
+          "weight_dtype": [
+            [
+              "default",
+              "fp8_e4m3fn",
+              "fp8_e4m3fn_fast",
+              "fp8_e5m2"
+            ],
+            {
+              "advanced": true
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "unet_name",
+          "weight_dtype"
+        ]
+      },
+      "output": [
+        "MODEL"
+      ],
+      "output_name": [
+        "MODEL"
+      ],
+      "name": "UNETLoader",
+      "output_node": false
+    },
+    "VAELoader": {
+      "input": {
+        "required": {
+          "vae_name": [
+            [
+              "minimax_h3_video_vae_int8_convrot.safetensors",
+              "minimax_h3_audio_vae_fp32.safetensors"
+            ]
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "vae_name"
+        ]
+      },
+      "output": [
+        "VAE"
+      ],
+      "output_name": [
+        "VAE"
+      ],
+      "name": "VAELoader",
+      "output_node": false
+    },
+    "CLIPLoader": {
+      "input": {
+        "required": {
+          "clip_name": [
+            [
+              "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+            ]
+          ],
+          "type": [
+            [
+              "stable_diffusion",
+              "stable_cascade",
+              "sd3",
+              "stable_audio",
+              "mochi",
+              "ltxv",
+              "pixart",
+              "cosmos",
+              "lumina2",
+              "wan",
+              "hidream",
+              "chroma",
+              "ace",
+              "omnigen2",
+              "qwen_image",
+              "hunyuan_image",
+              "flux2",
+              "ovis",
+              "longcat_image",
+              "cogvideox",
+              "lens",
+              "pixeldit",
+              "ideogram4",
+              "boogu",
+              "krea2",
+              "joyimage",
+              "mage",
+              "minimax",
+              "yue2",
+              "flux3",
+              "moss_image",
+              "fibo2"
+            ]
+          ]
+        },
+        "optional": {
+          "device": [
+            [
+              "default",
+              "cpu"
+            ],
+            {
+              "advanced": true
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "clip_name",
+          "type"
+        ],
+        "optional": [
+          "device"
+        ]
+      },
+      "output": [
+        "CLIP"
+      ],
+      "output_name": [
+        "CLIP"
+      ],
+      "name": "CLIPLoader",
+      "output_node": false
+    },
+    "CLIPTextEncode": {
+      "input": {
+        "required": {
+          "text": [
+            "STRING",
+            {
+              "multiline": true,
+              "dynamicPrompts": true,
+              "tooltip": "The text to be encoded."
+            }
+          ],
+          "clip": [
+            "CLIP",
+            {
+              "tooltip": "The CLIP model used for encoding the text."
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "text",
+          "clip"
+        ]
+      },
+      "output": [
+        "CONDITIONING"
+      ],
+      "output_name": [
+        "CONDITIONING"
+      ],
+      "name": "CLIPTextEncode",
+      "output_node": false
+    },
+    "LoadImage": {
+      "input": {
+        "required": {
+          "image": [
+            [
+              "input_first_frame.jpg",
+              "input_last_frame.jpg"
+            ]
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "image"
+        ]
+      },
+      "output": [
+        "IMAGE",
+        "MASK"
+      ],
+      "output_name": [
+        "IMAGE",
+        "MASK"
+      ],
+      "name": "LoadImage",
+      "output_node": false
+    },
+    "KSampler": {
+      "input": {
+        "required": {
+          "model": [
+            "MODEL",
+            {
+              "tooltip": "The model used for denoising the input latent."
+            }
+          ],
+          "seed": [
+            "INT",
+            {
+              "default": 0,
+              "min": 0,
+              "max": 18446744073709551615,
+              "control_after_generate": true,
+              "tooltip": "The random seed used for creating the noise."
+            }
+          ],
+          "steps": [
+            "INT",
+            {
+              "default": 20,
+              "min": 1,
+              "max": 10000,
+              "tooltip": "The number of steps used in the denoising process."
+            }
+          ],
+          "cfg": [
+            "FLOAT",
+            {
+              "default": 8.0,
+              "min": 0.0,
+              "max": 100.0,
+              "step": 0.1,
+              "round": 0.01,
+              "tooltip": "The Classifier-Free Guidance scale balances creativity and adherence to the prompt. Higher values result in images more closely matching the prompt however too high values will negatively impact quality."
+            }
+          ],
+          "sampler_name": [
+            [
+              "euler",
+              "euler_cfg_pp",
+              "euler_ancestral",
+              "euler_ancestral_cfg_pp",
+              "heun",
+              "heunpp2",
+              "exp_heun_2_x0",
+              "exp_heun_2_x0_sde",
+              "dpm_2",
+              "dpm_2_ancestral",
+              "lms",
+              "dpm_fast",
+              "dpm_adaptive",
+              "dpmpp_2s_ancestral",
+              "dpmpp_2s_ancestral_cfg_pp",
+              "dpmpp_sde",
+              "dpmpp_sde_gpu",
+              "dpmpp_2m",
+              "dpmpp_2m_cfg_pp",
+              "dpmpp_2m_sde",
+              "dpmpp_2m_sde_gpu",
+              "dpmpp_2m_sde_heun",
+              "dpmpp_2m_sde_heun_gpu",
+              "dpmpp_3m_sde",
+              "dpmpp_3m_sde_gpu",
+              "ddpm",
+              "lcm",
+              "ipndm",
+              "ipndm_v",
+              "deis",
+              "cfgpp_ud10_ab",
+              "res_multistep",
+              "res_multistep_cfg_pp",
+              "res_multistep_ancestral",
+              "res_multistep_ancestral_cfg_pp",
+              "gradient_estimation",
+              "gradient_estimation_cfg_pp",
+              "er_sde",
+              "seeds_2",
+              "seeds_3",
+              "sa_solver",
+              "sa_solver_pece",
+              "ddim",
+              "uni_pc",
+              "uni_pc_bh2"
+            ],
+            {
+              "tooltip": "The algorithm used when sampling, this can affect the quality, speed, and style of the generated output."
+            }
+          ],
+          "scheduler": [
+            [
+              "simple",
+              "sgm_uniform",
+              "karras",
+              "exponential",
+              "ddim_uniform",
+              "beta",
+              "normal",
+              "linear_quadratic",
+              "kl_optimal"
+            ],
+            {
+              "tooltip": "The scheduler controls how noise is gradually removed to form the image."
+            }
+          ],
+          "positive": [
+            "CONDITIONING",
+            {
+              "tooltip": "The conditioning describing the attributes you want to include in the image."
+            }
+          ],
+          "negative": [
+            "CONDITIONING",
+            {
+              "tooltip": "The conditioning describing the attributes you want to exclude from the image."
+            }
+          ],
+          "latent_image": [
+            "LATENT",
+            {
+              "tooltip": "The latent image to denoise."
+            }
+          ],
+          "denoise": [
+            "FLOAT",
+            {
+              "default": 1.0,
+              "min": 0.0,
+              "max": 1.0,
+              "step": 0.01,
+              "tooltip": "The amount of denoising applied, lower values will maintain the structure of the initial image allowing for image to image sampling."
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "model",
+          "seed",
+          "steps",
+          "cfg",
+          "sampler_name",
+          "scheduler",
+          "positive",
+          "negative",
+          "latent_image",
+          "denoise"
+        ]
+      },
+      "output": [
+        "LATENT"
+      ],
+      "output_name": [
+        "LATENT"
+      ],
+      "name": "KSampler",
+      "output_node": false
+    },
+    "VAEDecode": {
+      "input": {
+        "required": {
+          "samples": [
+            "LATENT",
+            {
+              "tooltip": "The latent to be decoded."
+            }
+          ],
+          "vae": [
+            "VAE",
+            {
+              "tooltip": "The VAE model used for decoding the latent."
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "samples",
+          "vae"
+        ]
+      },
+      "output": [
+        "IMAGE"
+      ],
+      "output_name": [
+        "IMAGE"
+      ],
+      "name": "VAEDecode",
+      "output_node": false
+    },
+    "CreateVideo": {
+      "input": {
+        "required": {
+          "images": [
+            "IMAGE",
+            {
+              "tooltip": "The images to create a video from."
+            }
+          ],
+          "fps": [
+            "FLOAT",
+            {
+              "default": 30.0,
+              "min": 1.0,
+              "max": 120.0,
+              "step": 1.0
+            }
+          ]
+        },
+        "optional": {
+          "audio": [
+            "AUDIO",
+            {
+              "tooltip": "The audio to add to the video."
+            }
+          ],
+          "bit_depth": [
+            "COMBO",
+            {
+              "tooltip": "Auto uses 8-bit for sRGB and 10-bit for HDR. Explicit 8-bit and 10-bit choices are independent of colorspace.",
+              "default": "auto",
+              "multiselect": false,
+              "options": [
+                "auto",
+                8,
+                10
+              ]
+            }
+          ],
+          "color_space": [
+            "COMBO",
+            {
+              "tooltip": "Colorspace of the input images. HDR selects BT.2020/HLG and HDR PQ selects BT.2020/PQ.",
+              "default": "sRGB",
+              "multiselect": false,
+              "options": [
+                "sRGB",
+                "HDR",
+                "HDR PQ"
+              ]
+            }
+          ],
+          "codec": [
+            "COMBO",
+            {
+              "tooltip": "Optionally encode the video immediately. None keeps the images in tensor form; Auto uses H.264.",
+              "advanced": true,
+              "default": "none",
+              "multiselect": false,
+              "options": [
+                "none",
+                "auto",
+                "h264",
+                "av1"
+              ]
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "images",
+          "fps"
+        ],
+        "optional": [
+          "audio",
+          "bit_depth",
+          "color_space",
+          "codec"
+        ]
+      },
+      "is_input_list": false,
+      "output": [
+        "VIDEO"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "VIDEO"
+      ],
+      "output_tooltips": [
+        null
+      ],
+      "output_matchtypes": null,
+      "name": "CreateVideo",
+      "display_name": "Create Video",
+      "description": "Create a video from images.",
+      "python_module": "comfy_extras.nodes_video",
+      "category": "video",
+      "output_node": false,
+      "deprecated": false,
+      "experimental": false,
+      "dev_only": false,
+      "api_node": false,
+      "price_badge": null,
+      "search_aliases": [
+        "images to video"
+      ],
+      "essentials_category": "Video Tools",
+      "has_intermediate_output": false
+    },
+    "SaveVideo": {
+      "input": {
+        "required": {
+          "video": [
+            "VIDEO",
+            {
+              "tooltip": "The video to save."
+            }
+          ],
+          "filename_prefix": [
+            "STRING",
+            {
+              "tooltip": "The prefix for the file to save. This may include formatting information such as %date:yyyy-MM-dd% or %Empty Latent Image.width% to include values from nodes.",
+              "default": "video/ComfyUI",
+              "multiline": false
+            }
+          ],
+          "format": [
+            [
+              "auto"
+            ],
+            {}
+          ]
+        },
+        "optional": {
+          "format.codec": [
+            [
+              "auto"
+            ],
+            {}
+          ]
+        },
+        "hidden": {
+          "prompt": [
+            "PROMPT"
+          ],
+          "extra_pnginfo": [
+            "EXTRA_PNGINFO"
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "video",
+          "filename_prefix",
+          "format"
+        ],
+        "optional": [
+          "codec"
+        ],
+        "hidden": [
+          "prompt",
+          "extra_pnginfo"
+        ]
+      },
+      "is_input_list": false,
+      "output": [
+        "VIDEO"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "video"
+      ],
+      "output_tooltips": [
+        "The input video, unchanged."
+      ],
+      "output_matchtypes": null,
+      "name": "SaveVideo",
+      "display_name": "Save Video",
+      "description": "Saves the input videos to your ComfyUI output directory.",
+      "python_module": "comfy_extras.nodes_video",
+      "category": "video",
+      "output_node": true,
+      "deprecated": false,
+      "experimental": false,
+      "dev_only": false,
+      "api_node": false,
+      "price_badge": null,
+      "search_aliases": [
+        "export video"
+      ],
+      "essentials_category": "Basics",
+      "has_intermediate_output": false
+    },
+    "LoadVideo": {
+      "input": {
+        "required": {
+          "file": [
+            [
+              "input_video.mp4"
+            ]
+          ]
+        }
+      },
+      "output": [
+        "VIDEO"
+      ]
+    },
+    "GetVideoComponents": {
+      "input": {
+        "required": {
+          "video": [
+            "VIDEO"
+          ]
+        }
+      },
+      "output": [
+        "IMAGE",
+        "AUDIO",
+        "FLOAT",
+        "COMBO",
+        "COMBO"
+      ]
+    },
+    "Canny": {
+      "input": {
+        "required": {
+          "image": [
+            "IMAGE"
+          ],
+          "low_threshold": [
+            "FLOAT",
+            {
+              "min": 0.01,
+              "max": 0.99
+            }
+          ],
+          "high_threshold": [
+            "FLOAT",
+            {
+              "min": 0.01,
+              "max": 0.99
+            }
+          ]
+        }
+      },
+      "output": [
+        "IMAGE"
+      ]
+    },
+    "WanVaceToVideo": {
+      "input": {
+        "required": {
+          "positive": [
+            "CONDITIONING"
+          ],
+          "negative": [
+            "CONDITIONING"
+          ],
+          "vae": [
+            "VAE"
+          ],
+          "width": [
+            "INT",
+            {
+              "min": 16,
+              "max": 16384
+            }
+          ],
+          "height": [
+            "INT",
+            {
+              "min": 16,
+              "max": 16384
+            }
+          ],
+          "length": [
+            "INT",
+            {
+              "min": 1,
+              "max": 16384
+            }
+          ],
+          "batch_size": [
+            "INT",
+            {
+              "min": 1,
+              "max": 4096
+            }
+          ],
+          "strength": [
+            "FLOAT",
+            {
+              "min": 0,
+              "max": 1000
+            }
+          ]
+        },
+        "optional": {
+          "control_video": [
+            "IMAGE"
+          ],
+          "reference_image": [
+            "IMAGE"
+          ]
+        }
+      },
+      "output": [
+        "CONDITIONING",
+        "CONDITIONING",
+        "LATENT",
+        "INT"
+      ]
+    },
+    "TrimVideoLatent": {
+      "input": {
+        "required": {
+          "samples": [
+            "LATENT"
+          ],
+          "trim_amount": [
+            "INT"
+          ]
+        }
+      },
+      "output": [
+        "LATENT"
+      ]
+    },
+    "ModelSamplingSD3": {
+      "input": {
+        "required": {
+          "model": [
+            "MODEL"
+          ],
+          "shift": [
+            "FLOAT",
+            {
+              "min": 0,
+              "max": 100
+            }
+          ]
+        }
+      },
+      "output": [
+        "MODEL"
+      ]
+    }
+  }
+}

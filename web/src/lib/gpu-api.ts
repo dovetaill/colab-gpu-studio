@@ -206,7 +206,7 @@ export const rollbackGpuWorkflow = (workflow_key: string, version: string | numb
 export const deactivateGpuWorkflow = (id: string) => apiFetch<GpuWorkflow>(`/api/gpu/workflows/${encodeURIComponent(id)}/deactivate`, post({ confirmed: true }));
 
 export type ActivationStep = { key: string; label: string; done: boolean; next?: boolean; running?: boolean; failed?: boolean };
-export type ActivationInput = { key: string; label: string; description?: string; type: string; required: boolean };
+export type ActivationInput = { key: string; label: string; description?: string; type: string; required: boolean; default?: number };
 export type WorkflowActivation = {
   workflow: { id: string; workflow_key: string; version: string; state: string; active: boolean };
   model: null | { model_id: string; review_approved: boolean; license_accepted: boolean; enabled: boolean; license?: string; source?: string };
@@ -327,12 +327,13 @@ export async function uploadAsset(projectId: string, file: File, onProgress?: (p
     const xhr = new XMLHttpRequest(); xhr.open('POST', `${API_BASE}/api/assets`); xhr.withCredentials = true;
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
     xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress?.(Math.round(event.loaded / event.total * 100)); };
-    xhr.onload = () => { let data: unknown; try { data = JSON.parse(xhr.responseText); } catch { reject(new ApiError('上传服务响应异常')); return; } if (xhr.status >= 200 && xhr.status < 300) { try { resolve(unwrapGpuResponse<GalleryAsset>(data as ApiEnvelope<GalleryAsset> | GalleryAsset)); } catch (error) { reject(error); } } else reject(new ApiError('素材上传失败', xhr.status)); };
+    xhr.onload = () => { let data: unknown; try { data = JSON.parse(xhr.responseText); } catch { reject(new ApiError('上传服务响应异常')); return; } if (xhr.status >= 200 && xhr.status < 300) { try { resolve(unwrapGpuResponse<GalleryAsset>(data as ApiEnvelope<GalleryAsset> | GalleryAsset)); } catch (error) { reject(error); } } else { const envelope = data as ApiEnvelope<GalleryAsset>; const error = typeof envelope.error === 'object' && envelope.error ? envelope.error : {}; reject(new ApiError(error.message || '素材上传失败', xhr.status, error.code)); } };
     xhr.onerror = () => reject(new ApiError('网络中断，请检查素材列表后重试'));
     xhr.send(body);
   });
 }
 export const assetUrl = (asset: GalleryAsset, thumbnail = false) => thumbnail ? asset.thumbnail_url || `/api/assets/${asset.id}/thumbnail` : asset.download_url || `/api/assets/${asset.id}/download`;
+export const assetPreviewUrl = (asset: GalleryAsset) => `/api/assets/${encodeURIComponent(asset.id)}/preview`;
 export const updateAsset = (id: string, favorite: boolean) => apiFetch<GalleryAsset>(`/api/assets/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ favorite }) });
 export const deleteAsset = (id: string) => apiFetch<void>(`/api/assets/${encodeURIComponent(id)}`, { method: 'DELETE' });
 
@@ -340,6 +341,13 @@ export interface GoogleClientConfig { configured: boolean; client_id?: string; r
 export const getGoogleClientConfig = (accountId?: string) => apiFetch<GoogleClientConfig>(`/api/gpu/auth/google/config${accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''}`);
 export const saveGoogleClientConfig = (body: {account_id?: string; client_id?: string; client_secret?: string; client_json?: Record<string, unknown>; confirmed: true}) => apiFetch<GoogleClientConfig>('/api/gpu/auth/google/config', post(body));
 export const getReferenceAssets = (projectId: string) => apiFetch<GalleryAsset[]>(`/api/assets?project_id=${encodeURIComponent(projectId)}`);
+export const importDriveVideo = (projectId: string, driveFileId: string, accountId?: string) =>
+  apiFetch<GalleryAsset>('/api/assets/drive-video', post({ project_id: projectId, drive_file_id: driveFileId, ...(accountId ? { account_id: accountId } : {}) }));
+export interface VaceSegment { index: number; start_seconds: number; end_seconds: number; length: number; }
+export const planVaceSegments = (start_seconds: number, end_seconds: number, fps: number) =>
+  apiFetch<VaceSegment[]>('/api/gpu/vace/segment-plan', post({ start_seconds, end_seconds, fps }));
+export const assembleVaceBatch = (batchId: string) =>
+  apiFetch<GalleryAsset>(`/api/gpu/vace/batches/${encodeURIComponent(batchId)}/assemble`, post({}));
 
 export function createGpuBatch(jobs: GpuJobRequest[], mode: 'save'|'smart'|'batch'|'retain', idleSeconds: number, idempotencyKey: string) {
   return apiFetch<{id:string}>('/api/gpu/batches', {method:'POST',headers:{'Idempotency-Key':idempotencyKey},body:JSON.stringify({jobs,mode,idle_seconds:Math.min(300, Math.max(0, idleSeconds))})});

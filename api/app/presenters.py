@@ -61,6 +61,10 @@ def public_job(job):
     }
     result = {k: v for k, v in job.items() if k in keys}
     result["job_id"] = job["id"]
+    request_body = job.get("request_body")
+    retry_of = request_body.get("retry_of") if isinstance(request_body, dict) else None
+    if isinstance(retry_of, str):
+        result["retry_of"] = retry_of
     result["mock"] = job.get("provider") == "mock"
     result["workflow_smoke"] = job.get("workflow_smoke") is True or (job.get("snapshot") or {}).get("workflow_smoke") is True
     result["resolved_params"] = (job.get("snapshot") or {}).get("resolved_params", {})

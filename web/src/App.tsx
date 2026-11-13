@@ -6,7 +6,7 @@ import { ComputePage, ThemePicker } from './pages/ComputePage';
 import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Sparkles, Zap, Image as ImageIcon, Cpu, Settings as SettingsIcon, Folder, ChevronDown, X, Plus, Check, Maximize2, Star, Download, Trash2, RotateCcw, Triangle } from 'lucide-react';
 import {
-  apiMessage, assetUrl, cancelGpuJob, createGpuJob, createGpuBatch, createProject, deleteAsset, disconnectGoogle,
+  apiMessage, assetUrl, assembleVaceBatch, cancelGpuJob, createGpuJob, createGpuBatch, createProject, deleteAsset, disconnectGoogle,
   apiFetch,
   getGpuComputeSpecs, getGpuGallery, getGpuJob, getGpuJobs, getGpuModels, listGpuInstances,
   getGpuPresets, getReferenceAssets, getGpuSettings, getGpuUsage, getGpuWorkflowSchema, getGpuWorkflows, getProjects, importGpuWorkflow,
@@ -256,6 +256,7 @@ export default function App() {
   const [detail, setDetail] = useState<GpuJob | null>(null);
   const [viewer, setViewer] = useState<GalleryAsset | null>(null);
   const [againJob, setAgainJob] = useState<GpuJob | null>(null);
+  const [vaceSegments, setVaceSegments] = useState<import('./lib/gpu-api').VaceSegment[]>([]);
   const [loginRefresh, setLoginRefresh] = useState(0);
   const [refreshingJobs, setRefreshingJobs] = useState(false);
   const idempotencyKey = useRef('');
@@ -554,7 +555,13 @@ export default function App() {
           retain_idle_minutes: runtimeChoice.retainIdleMinutes,
         },
       };
-      if (runtime === 'mock' || batchCount > 1) {
+      if (activeWorkflow.workflow_key === 'wan21-vace-v2v' && vaceSegments.length > 1) {
+        const first = vaceSegments[0];
+        if (Math.abs(first.start_seconds - Number(params.start_seconds)) > 0.001) throw new Error('起点已变化，请重新计算分段');
+        await createGpuBatch(vaceSegments.map((segment) => ({ ...body,
+          params: { ...body.params, start_seconds: segment.start_seconds, length: segment.length },
+        })), runtimeChoice.lifecycle, runtimeChoice.retainIdleMinutes * 60, idempotencyKey.current);
+      } else if (runtime === 'mock' || batchCount > 1) {
         // 批次沿用用户选定的账号、实例与生命周期，不再静默改成 batch。
         await createGpuBatch(Array.from({length:batchCount},(_,index)=>({...body,
           params:{...body.params,...(typeof body.params.seed === 'number' && body.params.seed >= 0 ? {seed:body.params.seed+index} : {})}})),
@@ -830,6 +837,7 @@ export default function App() {
             setSelectedAssets={setSelectedAssets}
             uploadProgress={uploadProgress}
             onUpload={handleUpload}
+            onImported={(asset) => { if (asset.project_id === currentProjectId.current) setReferenceImages((curr) => [asset, ...curr.filter((item) => item.id !== asset.id)]); }}
             modelId={modelId}
             setModelId={setModelId}
             workflowId={workflowId}
@@ -848,7 +856,7 @@ export default function App() {
             onRuntimeChoiceChange={changeRuntimeChoice}
             loading={loading}
             error={error}
-            onSubmit={() => setConfirm('submit')}
+            onSubmit={(segments) => { setVaceSegments(segments || []); setConfirm('submit'); }}
             onApplyPreset={applyPreset}
             onSavePreset={(name) => void savePreset(name)}
           />
@@ -863,6 +871,19 @@ export default function App() {
             onCancel={(id) => void action('cancel', async () => { await cancelGpuJob(id); await refreshJobs(); })}
             onRetry={(id) => void action('retry', async () => {
               const job = jobs.find((item) => item.id === id);
+              if (job?.workflow_key === 'wan21-vace-v2v' && ['failed', 'cancelled'].includes(String(job.state))) {
+                const pending = [id], seen = new Set<string>();
+                while (pending.length) {
+                  const parent = pending.shift()!;
+                  if (seen.has(parent)) continue;
+                  seen.add(parent);
+                  for (const child of jobs.filter((item) => item.retry_of === parent)) {
+                    if (!['failed', 'cancelled'].includes(String(child.state))) throw new Error('该片段已有进行中或成功的重试，请查看重试任务或直接合成。');
+                    pending.push(child.id);
+                  }
+                }
+              }
+              if (job?.workflow_key === 'wan21-vace-v2v' && job.provider === 'colab' && !window.confirm('重新运行这个片段会申请 Colab GPU 并消耗 CU，继续吗？')) return;
               const key = retryKeys.current[id] || `attempt:${id}:${keyId()}`;
               retryKeys.current[id] = key;
               if (job?.provider === 'mock') await retryGpuAttempt(id, key);
@@ -871,6 +892,11 @@ export default function App() {
               await refreshJobs();
             })}
             onDetail={(job) => void action('inspect', async () => setDetail(await getGpuJob(job.id)))}
+            onAssemble={(batchId) => void action('assemble', async () => {
+              const asset = await assembleVaceBatch(batchId);
+              setGallery((current) => [asset, ...current.filter((item) => item.id !== asset.id)]);
+              setViewer(asset);
+            })}
             onRetain={(job) => void retainJob(job)}
             onInstance={(job) => { const instance = instances.find((item) => instanceIdOf(item) === String(job.instance_id || '')); if (instance) { const id = instanceIdOf(instance); setRuntimeChoice({ accountId: instance.account_id || null, instanceId: id, lifecycle: runtimeChoice.lifecycle, retainIdleMinutes: runtimeChoice.retainIdleMinutes }); setTab('算力'); } }}
           />
@@ -977,7 +1003,9 @@ export default function App() {
               <dt>工作流</dt><dd>{activeWorkflow.workflow_key} · v{activeWorkflow.workflow_version}</dd>
               <dt>运行方式</dt><dd>{runtime === 'colab' ? 'Colab GPU（会扣 CU）' : '离线模拟（不扣 CU）'}</dd>
               <dt>机器</dt><dd>{resolveInstanceSubmission(runtimeChoice, instances).machineLabel}</dd>
-              <dt>数量</dt><dd>{batchCount}</dd>
+              <dt>{vaceSegments.length ? '连续片段数' : '数量'}</dt><dd>{vaceSegments.length || batchCount}</dd>
+              {vaceSegments.length > 0 && <><dt>完整范围</dt><dd>{vaceSegments[0].start_seconds.toFixed(3)}–{vaceSegments[vaceSegments.length - 1].end_seconds.toFixed(3)} 秒</dd><dt>费用</dt><dd>每段分别申请并计费，预算检查也逐段执行</dd></>}
+              {runtime === 'colab' && typeof manifest?.estimated_units === 'number' && <><dt>预计 CU</dt><dd>约 {(manifest.estimated_units * (vaceSegments.length || batchCount)).toFixed(3)} CU，实际以 Google 账单为准</dd></>}
               {runtime === 'colab' && <><dt>最长运行</dt><dd>{maxRuntime} 分钟</dd></>}
             </dl>
             {error && <p className="status error" role="alert">{error}</p>}
@@ -1072,13 +1100,16 @@ export default function App() {
               </div>
             </div>
             {viewer.mime.startsWith('video/') ? (
-              <video className={styles.viewerVideo} src={assetUrl(viewer)} controls autoPlay playsInline />
+              <video className={styles.viewerVideo} src={`/api/assets/${encodeURIComponent(viewer.id)}/preview`} controls autoPlay playsInline />
             ) : viewer.mime.startsWith('image/') ? (
               <img className={styles.viewerImage} src={assetUrl(viewer)} alt="" />
             ) : (
               <p className="muted">这是诊断文件，不能直接预览，请下载查看。</p>
             )}
             <div className={styles.viewerActions}>
+              {typeof viewer.resolved_params === 'object' && viewer.resolved_params !== null && typeof (viewer.resolved_params as Record<string, unknown>).video_asset_id === 'string' && (
+                <a className="button secondary small" href={`/api/assets/${encodeURIComponent(String((viewer.resolved_params as Record<string, unknown>).video_asset_id))}/preview`} target="_blank" rel="noreferrer">查看原视频</a>
+              )}
               <button className="button secondary small" type="button" onClick={() => void favorite(viewer)}>
                 <Star size={14} strokeWidth={1.6} aria-hidden />{viewer.favorite ? '取消收藏' : '收藏'}
               </button>

@@ -3,6 +3,7 @@ from app.gpu.registry import Registry
 from app.gpu.repository import Repository
 
 EXPECTED = {
+    ("wan21-vace-v2v", "1.0.0"),
     ("moss-image-sft-t2i", "1.0.0"),
     ("krea2-moss-dual-t2i", "1.0.0"),
     ("krea2-moss-dual-t2i", "1.1.1"),
@@ -51,7 +52,7 @@ def test_builtin_records_are_owner_scoped():
     registry.bootstrap("second-owner")
     first = registry.workflows("first-owner")
     second = registry.workflows("second-owner")
-    assert len(first) == len(second) == 6
+    assert len(first) == len(second) == 7
     assert {r["id"] for r in first}.isdisjoint(r["id"] for r in second)
     assert all(r["owner_id"] == "second-owner" for r in second)
 
@@ -138,7 +139,7 @@ def test_catalog_bootstrap_never_calls_external_services(monkeypatch):
     monkeypatch.setattr(httpx.Client, "request", reject)
     registry = Registry(Repository(Store("sqlite:///:memory:")))
     registry.bootstrap("offline-owner")
-    assert len(registry.workflows("offline-owner")) == 6
+    assert len(registry.workflows("offline-owner")) == 7
 
 
 def test_every_bundled_lora_node_is_shipped_or_refused():

@@ -591,3 +591,13 @@ DOCS_SOURCE_ROOT=/path/to/colab-gpu-studio \
 ```
 
 核验脚本需要完整项目源码及其 FastAPI/TestClient/Pillow 等依赖，不是独立的线上探测脚本。它不读取生产 `.env`，只使用内存数据库和固定的非秘密测试凭据。验证采用本地内存数据库、临时素材目录、Mock Provider，并阻断真实出站网络；只证明请求、鉴权、幂等、状态查询及下载协议正确，**不证明线上部署状态、Google 授权、真实模型质量、实际扣费或真实 GPU 释放**。
+# Wan2.1 VACE 视频素材与分段
+
+新增视频 API 需要现有 Studio 登录鉴权及项目归属校验；导入后提交生成任务所用的是 `studio_asset_id`，不是 Drive File ID。大文件通过 `POST /api/assets` 的 multipart 文件上传，不应放入 JSON/Base64。上传响应包含 `video_metadata`，预览和下载使用现有 `/api/assets/{id}/preview` 与 `/download`。
+
+- `POST /api/assets/drive-video`：JSON 为 `{"project_id":"...","drive_file_id":"...","account_id":"..."}`，`account_id` 可省略（仅在恰好有一个 Drive 授权时自动选择）。服务端使用该账号或其关联 Drive 账号，不接受分享链接或任意 URL。403/404 不代表导入成功。
+- `POST /api/gpu/vace/segment-plan`：JSON 为 `{"start_seconds":0,"end_seconds":30,"fps":16}`，返回按时间顺序的 `index`、`start_seconds`、`end_seconds`、`length`。按此计划调用现有批次 API，各段使用同一项目、工作流、视频、尺寸、FPS 与参数；每段 `params.start_seconds` 和 `params.length` 按计划设置。
+- `POST /api/gpu/vace/batches/{batch_id}/assemble`：所有片段或其重试成功后手动调用；服务器检查来源、顺序、哈希、音轨及生成参数，返回项目内的新 MP4 Asset。同一组合再次调用会复用已有作品。
+- 失败的真实片段可使用已有 `POST /api/gpu/jobs/{job_id}/retry`，请求新的 `Idempotency-Key`；该操作会创建可能消耗 CU 的新任务。原租约未确认释放、或已有有效重试时会拒绝；不要重复重试已成功片段。
+
+当前工作流为 Draft，真实 GPU 推理与长视频尚未完成验收。完整模型锁、音频、费用和 Docker 回滚说明见 [WAN_VACE_V2V.md](WAN_VACE_V2V.md)。

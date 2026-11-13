@@ -26,6 +26,7 @@ import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -118,6 +119,19 @@ def _probe_gpu() -> dict | None:
         # Device reporting is informational and must never stop generation.
         return None
     return {"source": "runtime_nvidia_smi", "captured_at": time.time(), "devices": devices} if devices else None
+
+
+def _require_vace_resources(diagnostics: dict | None) -> None:
+    devices = (diagnostics or {}).get("devices") or []
+    if not devices or max(int(item.get("memory_mib") or 0) for item in devices) < 20000:
+        raise WorkerError("VACE_GPU_MEMORY_INSUFFICIENT: 需要可识别且至少 20000 MiB 显存的 GPU")
+    try:
+        total_kib = next(int(line.split()[1]) for line in Path("/proc/meminfo").read_text().splitlines()
+                         if line.startswith("MemTotal:"))
+    except (OSError, ValueError, IndexError, StopIteration) as exc:
+        raise WorkerError("VACE_RAM_UNAVAILABLE: 无法确认运行时内存") from exc
+    if total_kib < 10 * 1024 * 1024:
+        raise WorkerError("VACE_RAM_INSUFFICIENT: 运行时内存不足 10 GiB")
 
 
 def _instance_service_name(instance_id: str) -> str:
@@ -1079,6 +1093,8 @@ def _restore_weights(
                     if prep:
                         return {**record, "source": "drive", "seconds": round(time.time() - started, 1)}
                     cache.fetch(entry, target)
+                    if manifest.get("workflow_key") == "wan21-vace-v2v":
+                        verify_file(target, item)
                     return {**record, "source": "drive", "seconds": round(time.time() - started, 1)}
                 if entry and is_drive:
                     cache.fetch(entry, target)
@@ -1089,6 +1105,8 @@ def _restore_weights(
             except Exception as exc:  # noqa: BLE001 - Drive sources never fall back to Hugging Face
                 if is_drive:
                     raise WorkerError(f"Drive weight import failed: {_safe_error(exc)[:200]}") from exc
+                if manifest.get("workflow_key") == "wan21-vace-v2v" and "sha256" in str(exc).lower():
+                    raise WorkerError("VACE model weight sha256 mismatch") from exc
                 record["cache_error"] = _safe_error(exc)[:200]
                 target.unlink(missing_ok=True)
         if is_drive:
@@ -1188,6 +1206,111 @@ def _write_input_files(comfy: Path, snapshot: dict) -> None:
         (folder / name).write_bytes(data)
 
 
+def _restore_vace_video(comfy: Path, payload: dict) -> Path | None:
+    spec = (payload.get("snapshot") or {}).get("input_video")
+    if not spec:
+        return None
+    staged = payload.get("staged_video")
+    cache = _drive_cache(payload)
+    if not isinstance(staged, dict) or cache is None:
+        raise WorkerError("video staging or Drive authorization is missing")
+    file_id, sha, size = staged.get("id"), staged.get("sha256"), staged.get("size")
+    if (not isinstance(file_id, str) or not DRIVE_ID.fullmatch(file_id)
+            or not isinstance(sha, str) or not SHA256.fullmatch(sha)
+            or isinstance(size, bool) or not isinstance(size, int) or not 0 < size <= MAX_OUTPUT_BYTES):
+        raise WorkerError("staged video descriptor is invalid")
+    fields = urlencode({"fields": "id,size,md5Checksum,trashed"})
+    entry = cache._json("GET", f"{DRIVE_API}/files/{quote(file_id)}?{fields}")  # noqa: SLF001
+    if (entry.get("id") != file_id or entry.get("trashed") is not False
+            or str(entry.get("size")) != str(size) or not entry.get("md5Checksum")):
+        raise WorkerError("staged video metadata mismatch")
+    destination = comfy / "input" / "input_video.mp4"
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".mp4.part")
+    sha_digest = hashlib.sha256()
+    md5_digest = hashlib.md5(usedforsecurity=False)
+    written = 0
+    try:
+        with cache._open("GET", f"{DRIVE_API}/files/{quote(file_id)}?alt=media", timeout=300) as response, temporary.open("wb") as out:  # noqa: SLF001
+            while block := response.read(1024 * 1024):
+                written += len(block)
+                if written > size:
+                    raise WorkerError("staged video exceeds expected size")
+                sha_digest.update(block)
+                md5_digest.update(block)
+                out.write(block)
+        if written != size or sha_digest.hexdigest() != sha.lower() or md5_digest.hexdigest() != entry["md5Checksum"]:
+            raise WorkerError("staged video sha256 mismatch")
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination
+
+
+def _mux_vace_audio(target: Path, source: Path, spec: dict, size_limit: int) -> int:
+    """Mux the original clip's audio without changing the sampled picture timeline."""
+    duration = spec.get("duration_seconds")
+    if isinstance(duration, bool) or not isinstance(duration, (float, int)) or not 0 < duration <= 11:
+        raise WorkerError("video segment duration is invalid")
+    temp = target.with_name(target.stem + ".mux.mp4")
+    try:
+        args = ["ffmpeg", "-v", "error", "-nostdin", "-i", str(target)]
+        if spec.get("keep_audio") and spec.get("has_audio"):
+            args += ["-i", str(source), "-map", "0:v:0", "-map", "1:a:0"]
+        else:
+            args += ["-map", "0:v:0", "-an"]
+        args += ["-t", str(duration), "-c:v", "libx264", "-pix_fmt", "yuv420p"]
+        if spec.get("keep_audio") and spec.get("has_audio"):
+            args += ["-c:a", "aac"]
+        args += ["-movflags", "+faststart", "-y", str(temp)]
+        _run(args, timeout=120)
+        size = temp.stat().st_size
+        if not 0 < size <= size_limit:
+            raise WorkerError("muxed video exceeds configured bound")
+        probe = _run(["ffprobe", "-v", "error", "-count_frames", "-show_entries",
+                      "stream=codec_type,width,height,nb_read_frames,avg_frame_rate:format=duration",
+                      "-of", "json", str(temp)], timeout=60)
+        try:
+            report = json.loads(probe.stdout)
+            video = next(item for item in report["streams"] if item.get("codec_type") == "video")
+            frames = int(video["nb_read_frames"])
+            fps = float(Fraction(video["avg_frame_rate"]))
+            has_audio = any(item.get("codec_type") == "audio" for item in report["streams"])
+            actual_duration = float(report["format"]["duration"])
+            if (frames != spec["length"] or int(video["width"]) != spec["width"]
+                    or int(video["height"]) != spec["height"] or abs(fps - spec["fps"]) > 0.01
+                    or abs(actual_duration - duration) > max(0.15, 2 / spec["fps"])
+                    or has_audio != bool(spec.get("keep_audio") and spec.get("has_audio"))):
+                raise ValueError
+        except (KeyError, ValueError, TypeError, StopIteration, ZeroDivisionError) as exc:
+            raise WorkerError("VACE output timeline, frames, size or audio mismatch") from exc
+        temp.replace(target)
+        return size
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def _verify_vace_nodes(api: str, graph: dict) -> None:
+    """Check the running ComfyUI schema, including the actual graph input names."""
+    info = _http_json(api + "/object_info", timeout=30)
+    for node in graph.values():
+        kind, inputs = node["class_type"], node["inputs"]
+        actual = info.get(kind)
+        if not isinstance(actual, dict):
+            raise WorkerError(f"COMFY_NODE_MISMATCH: missing {kind}")
+        sections = actual.get("input") or {}
+        names = set((sections.get("required") or {})) | set((sections.get("optional") or {}))
+        for name in inputs:
+            if name not in names and name.split(".", 1)[0] not in names:
+                raise WorkerError(f"COMFY_NODE_MISMATCH: missing {kind}.{name}")
+
+
+def _vace_saved_node_outputs(graph: dict, outputs: dict) -> list[dict]:
+    """Input previews are never generation results, even if Comfy reports them in history."""
+    return [value for node_id, value in outputs.items()
+            if isinstance(value, dict) and (graph.get(str(node_id)) or {}).get("class_type") == "SaveVideo"]
+
+
 def _stream_output(response, target: Path, limit: int) -> int:
     total = 0
     partial = target.with_suffix(target.suffix + '.partial')
@@ -1223,6 +1346,11 @@ def _run_comfy(root: Path, payload: dict, manifest: dict, graph: dict, stages: _
     if _warm_take(root, fingerprint, nodes, checked):
         # Same runtime, same environment: the previous job left it restored. Nothing to download.
         stages.start("warm_reuse")
+        snapshot = payload.get("snapshot") or {}
+        if snapshot.get("input_video") or (snapshot.get("manifest") or {}).get("workflow_key") == "wan21-vace-v2v":
+            for item in checked:
+                if _sha256(comfy / "models" / item["target"]) != item["sha256"]:
+                    raise WorkerError("VACE model weight sha256 mismatch")
         env = {"source": "warm"}
         weights = [{"target": w["target"], "sha256": w["sha256"], "source": "warm", "seconds": 0.0} for w in checked]
     else:
@@ -1237,6 +1365,7 @@ def _run_comfy(root: Path, payload: dict, manifest: dict, graph: dict, stages: _
             stages.start("restore_loras")
             _restore_user_loras(comfy, user_loras, _drive_cache(payload))
         _write_input_files(comfy, payload.get("snapshot") or {})
+        staged_input = _restore_vace_video(comfy, payload)
         stages.start("comfy_start")
         log_path = root / "comfy.log"
         log = log_path.open("ab", buffering=0)
@@ -1262,6 +1391,8 @@ def _run_comfy(root: Path, payload: dict, manifest: dict, graph: dict, stages: _
                     time.sleep(1)
             else:
                 raise WorkerError("Comfy worker startup timed out")
+            if staged_input is not None:
+                _verify_vace_nodes(api, graph)
             stages.start("sampling")
             queued = _http_json(api + "/prompt", "POST", {"prompt": graph}, timeout=30)
             prompt_id = queued.get("prompt_id")
@@ -1289,13 +1420,18 @@ def _run_comfy(root: Path, payload: dict, manifest: dict, graph: dict, stages: _
                 total = 0
                 output_dir = root / "outputs"
                 output_dir.mkdir(mode=0o700, exist_ok=True)
-                for node_output in (item.get("outputs") or {}).values():
+                history_outputs = item.get("outputs") or {}
+                node_outputs = (_vace_saved_node_outputs(graph, history_outputs) if staged_input is not None
+                                else list(history_outputs.values()))
+                for node_output in node_outputs:
                     if not isinstance(node_output, dict):
                         continue
                     for category in ("images", "gifs", "videos"):
                         for entry in node_output.get(category, []) or []:
                             if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str):
                                 continue
+                            if staged_input is not None and entry.get("type", "output") != "output":
+                                raise WorkerError("VACE output is not a saved generation")
                             filename = Path(entry["filename"]).name
                             mime = _OUTPUT_MIME.get(Path(filename).suffix.lower())
                             if mime is None:  # SaveVideo reports videos under "images"; judge by extension
@@ -1308,6 +1444,11 @@ def _run_comfy(root: Path, payload: dict, manifest: dict, graph: dict, stages: _
                             output_limit = payload.get('_local_artifact_limit', MAX_OUTPUT_BYTES)
                             with urlopen(request, timeout=30) as response:
                                 size = _stream_output(response, target, output_limit - total)
+                            if staged_input is not None:
+                                if mime != "video/mp4":
+                                    raise WorkerError("VACE output is not MP4")
+                                size = _mux_vace_audio(target, staged_input, (payload["snapshot"]["input_video"]),
+                                                       output_limit - total)
                             total += size
                             outputs.append(
                                 {
@@ -1323,6 +1464,8 @@ def _run_comfy(root: Path, payload: dict, manifest: dict, graph: dict, stages: _
                                     },
                                 }
                             )
+                if staged_input is not None and len(outputs) != 1:
+                    raise WorkerError("VACE output missing or unexpected output count")
                 return outputs
             raise WorkerError("Comfy execution timed out")
         finally:
@@ -1334,6 +1477,9 @@ def _run_comfy(root: Path, payload: dict, manifest: dict, graph: dict, stages: _
                     process.kill()
             log.close()
     finally:
+        if (payload.get("snapshot") or {}).get("input_video"):
+            (comfy / "input" / "input_video.mp4").unlink(missing_ok=True)
+            (comfy / "input" / "input_reference_image.jpg").unlink(missing_ok=True)
         _warm_put(root, fingerprint)  # restore succeeded above, so the tree is reusable even if this job failed later
 
 
@@ -1385,6 +1531,8 @@ def run_job(payload: dict, root: Path, *, artifact_store=None) -> None:
             diagnostics = _probe_gpu()
             if diagnostics:
                 _status(root, "running", gpu_diagnostics=diagnostics)
+            if snapshot.get("input_video"):
+                _require_vace_resources(diagnostics)
         if snapshot.get("system_smoke") is True:
             if manifest.get("executor") != "cuda-smoke":
                 raise WorkerError("system smoke requires the cuda-smoke executor manifest")
@@ -1413,7 +1561,23 @@ def run_job(payload: dict, root: Path, *, artifact_store=None) -> None:
         log = root / "comfy.log"
         if log.is_file():
             message = (message + " | comfy.log: " + log.read_text("utf-8", "replace")[-500:])[:1400]
-        _status(root, "failed", error_code="gpu_worker_failed", error_message=message, timings=stages.timings)
+        error_code = "gpu_worker_failed"
+        snapshot = payload.get("snapshot") or {}
+        if snapshot.get("input_video") or (snapshot.get("manifest") or {}).get("workflow_key") == "wan21-vace-v2v":
+            low = message.lower()
+            if "vace_gpu_memory_insufficient" in low or "vace_ram_insufficient" in low or "vace_ram_unavailable" in low:
+                error_code = "gpu_memory_insufficient"
+            elif "out of memory" in low or "outofmemory" in low:
+                error_code = "gpu_out_of_memory"
+            elif "sha256" in low and "mismatch" in low:
+                error_code = "video_hash_mismatch" if "video" in low else "model_hash_mismatch"
+            elif "staged video" in low:
+                error_code = "video_transfer_failed"
+            elif "comfy_node_mismatch" in low:
+                error_code = "comfy_node_mismatch"
+            elif "reviewed model download" in low or "model download produced no file" in low:
+                error_code = "model_file_missing"
+        _status(root, "failed", error_code=error_code, error_message=message, timings=stages.timings)
 
 
 class _MCPManifestStore:

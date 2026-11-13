@@ -636,6 +636,11 @@ class MCPGPUExecutor:
                 "runtime_folder_id": cache.get("runtime_folder_id"),
                 "access_token": cache.get("access_token"),
             }
+        if isinstance(job.get("staged_video"), dict):
+            payload["staged_video"] = {
+                key: job["staged_video"].get(key)
+                for key in ("id", "sha256", "size", "keep_audio", "has_audio", "duration_seconds")
+            }
         return payload
 
     def _exec_code_on_handle(self, handle: dict, session: str, execution_id: str, code: str) -> Any:

@@ -7,6 +7,7 @@ import io
 import json
 import os
 import secrets
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -18,6 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from . import __version__
 from .account_routes import router as account_router
@@ -146,11 +148,13 @@ async def lifespan(app):
 app = FastAPI(title="Colab GPU Studio", version=__version__, lifespan=lifespan)
 router = APIRouter()
 _login_limits = {}
+_asset_requests = threading.BoundedSemaphore(4)
 
 
 @app.middleware("http")
 async def security_context(request, call_next):
     request.state.request_id = str(uuid.uuid4())
+    asset_slot = False
     try:
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             origin = request.headers.get("Origin")
@@ -159,11 +163,22 @@ async def security_context(request, call_next):
 
                 if urlsplit(origin).netloc != request.url.netloc:
                     raise APIError("CSRF_ORIGIN", "跨站写入被拒绝", 403)
-        if int(request.headers.get("Content-Length", "0")) > settings.max_upload_bytes + 1048576:
+        limit = settings.max_video_upload_bytes if request.url.path == "/api/assets" else settings.max_upload_bytes
+        if request.url.path == "/api/assets" and request.method == "POST":
+            current_user(request)  # Authenticate before multipart parser spools the request body.
+            if not request.headers.get("Content-Length"):
+                raise APIError("CONTENT_LENGTH_REQUIRED", "上传素材必须提供 Content-Length", 411)
+            asset_slot = _asset_requests.acquire(blocking=False)
+            if not asset_slot:
+                raise APIError("VIDEO_UPLOAD_BUSY", "素材上传繁忙，请稍后重试", 429, True)
+        if int(request.headers.get("Content-Length", "0")) > limit + 1048576:
             raise APIError("PAYLOAD_TOO_LARGE", "请求超过上传限制", 413)
         response = await call_next(request)
     except APIError as exc:
         response = error_response(request, exc)
+    finally:
+        if asset_slot:
+            _asset_requests.release()
     response.headers["X-Request-ID"] = request.state.request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "same-origin"
@@ -583,7 +598,8 @@ def cancel_job(job_id: str, request: Request, user=Depends(current_user), st=Dep
 
 @router.post("/jobs/{job_id}/retry")
 def retry_job(job_id: str, request: Request, user=Depends(current_user), st=Depends(get_store)):
-    original = own(Repository(st), "jobs", job_id, user)
+    repo = Repository(st)
+    original = own(repo, "jobs", job_id, user)
     if original["state"] not in {"failed", "cancelled", "completed"}:
         raise APIError("JOB_ACTIVE", "原任务尚未结束，不能重复提交")
     key = request.headers.get("Idempotency-Key")
@@ -592,9 +608,43 @@ def retry_job(job_id: str, request: Request, user=Depends(current_user), st=Depe
     raw=copy.deepcopy(original.get('request_body') or {})
     if raw.get('kind') or any((original.get('snapshot') or {}).get(flag) or original.get(flag) for flag in ('system_smoke','workflow_smoke','prep')):
         raise APIError('SPECIAL_JOB_RETRY_REQUIRED','诊断或预热任务需回到对应入口重新确认',409)
+    if original.get("workflow_key") == "wan21-vace-v2v" and any(
+        lease.get("owner_job_id") == job_id and lease.get("state") != "deleted"
+        for lease in repo.list("leases", user["id"])
+    ):
+        raise APIError("GPU_NOT_RELEASED", "原片段的 GPU 租约尚未确认释放，暂不能重试", 409)
     if original.get('resolved_seed') is not None:
         raw.setdefault('params',{})['seed']=original['resolved_seed']
     raw['retry_of']=original['id']
+    if original.get("workflow_key") == "wan21-vace-v2v" and original["state"] in {"failed", "cancelled"}:
+        rows = repo.list("jobs", user["id"])
+        by_id = {item["id"]: item for item in rows}
+        root_id, ancestors = job_id, set()
+        while root_id not in ancestors:
+            ancestors.add(root_id)
+            request_body = (by_id.get(root_id) or {}).get("request_body")
+            parent = request_body.get("retry_of") if isinstance(request_body, dict) else None
+            if not isinstance(parent, str) or parent not in by_id:
+                break
+            root_id = parent
+        with st.upload_lock("vace-retry:" + root_id) as acquired:
+            if not acquired:
+                raise APIError("RETRY_BUSY", "该片段正在提交重试，请稍后检查任务列表", 409, True)
+            rows = repo.list("jobs", user["id"])
+            children, queue, visited = [], [root_id], set()
+            while queue:
+                parent = queue.pop(0)
+                if parent in visited:
+                    continue
+                visited.add(parent)
+                branch = [item for item in rows if isinstance(item.get("request_body"), dict)
+                          and item["request_body"].get("retry_of") == parent]
+                children.extend(branch)
+                queue.extend(item["id"] for item in branch)
+            if any(item.get("state") not in {"failed", "cancelled"} and item.get("idempotency_key") != key
+                   for item in children):
+                raise APIError("RETRY_EXISTS", "该片段已有进行中或成功的重试，请查看任务列表", 409)
+            return ok(public_job(admit_job(st, user, raw, key)), request, 202)
     return ok(public_job(admit_job(st, user, raw, key)), request, 202)
 
 
@@ -663,6 +713,17 @@ async def upload_asset(
     st=Depends(get_store),
 ):
     own(st, "projects", project_id, user)
+    filename = file.filename or "upload.bin"
+    if Path(filename).suffix.lower() in {".mp4", ".webm"}:
+        from .video_assets import VideoIngest
+
+        with VideoIngest(filename) as ingest:
+            if file.content_type not in {ingest.mime, "application/octet-stream", None}:
+                raise APIError("VIDEO_FORMAT_UNSUPPORTED", "视频 MIME 类型与扩展名不一致", 422)
+            while chunk := await file.read(1024 * 1024):
+                ingest.write(chunk)
+            asset = await run_in_threadpool(ingest.finish, st, user["id"], project_id)
+        return ok(public_asset(asset), request, 201)
     content = await file.read(settings.max_upload_bytes + 1)
     return ok(
         public_asset(save_asset(st, user["id"], project_id, content, file.filename or "upload.bin")),
@@ -671,11 +732,49 @@ async def upload_asset(
     )
 
 
+class DriveVideoImport(BaseModel):
+    project_id: str = Field(min_length=1, max_length=128)
+    drive_file_id: str = Field(min_length=1, max_length=200)
+    account_id: str | None = Field(default=None, max_length=128)
+
+
+class VaceSegmentPlan(BaseModel):
+    start_seconds: float = Field(ge=0, le=3600, allow_inf_nan=False)
+    end_seconds: float = Field(gt=0, le=3600, allow_inf_nan=False)
+    fps: float = Field(ge=8, le=24, allow_inf_nan=False)
+
+
+@router.post("/vace/segment-plan")
+def vace_segment_plan(body: VaceSegmentPlan, request: Request, user=Depends(current_user)):
+    from .gpu.vace_segments import plan_segments
+
+    return ok(plan_segments(body.start_seconds, body.end_seconds, body.fps), request)
+
+
+@router.post("/vace/batches/{batch_id}/assemble")
+def vace_assemble(batch_id: str, request: Request, user=Depends(current_user), st=Depends(get_store)):
+    from .gpu.vace_segments import assemble_batch
+
+    asset = assemble_batch(st, Repository(st), user["id"], batch_id)
+    return ok(public_asset(asset), request, 201)
+
+
+@app.post("/api/assets/drive-video")
+def import_video_from_drive(body: DriveVideoImport, request: Request, user=Depends(current_user), st=Depends(get_store)):
+    from .video_assets import import_drive_video
+
+    own(st, "projects", body.project_id, user)
+    asset = import_drive_video(st, user["id"], body.project_id, body.drive_file_id, body.account_id)
+    return ok(public_asset(asset), request, 201)
+
+
 @app.get("/api/assets/{asset_id}/download")
 @app.get("/api/assets/{asset_id}/preview")
-def download_asset(asset_id: str, user=Depends(current_user), st=Depends(get_store)):
+def download_asset(asset_id: str, request: Request, user=Depends(current_user), st=Depends(get_store)):
     asset = own(st, "assets", asset_id, user)
-    return FileResponse(asset_path(asset), media_type=asset["mime"], filename=asset["filename"])
+    disposition = "inline" if request.url.path.endswith("/preview") else "attachment"
+    return FileResponse(asset_path(asset), media_type=asset["mime"], filename=asset["filename"],
+                        content_disposition_type=disposition)
 
 
 @app.get("/api/assets/{asset_id}/thumbnail")

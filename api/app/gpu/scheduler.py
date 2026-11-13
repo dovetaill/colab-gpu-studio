@@ -915,6 +915,7 @@ class Scheduler:
                 error_message=message,
                 cleanup_final_state="failed",
             )
+        self._discard_staged_video(job)
         return self._set_state(
             job, "failed", message, requested_outcome="failed", error_code=code, error_message=message
         )
@@ -964,9 +965,18 @@ class Scheduler:
         execution_id = job["execution_id"]
         try:
             # The Drive token is attached to an in-memory copy only; it is never persisted.
+            drive_cache = self._model_cache(job)
+            if job.get("staged_video") and not drive_cache and self._provider_name(job) == "colab":
+                from .drive import DriveStorage
+
+                storage = DriveStorage(job, self.store)
+                try:
+                    drive_cache = storage.model_cache()
+                finally:
+                    storage.close()
             executor_job = {
                 **job,
-                "drive_cache": self._model_cache(job),
+                "drive_cache": drive_cache,
                 "deadline_epoch": job.get("deadline_epoch")
                 if job.get("deadline_epoch") is not None
                 else lease.get("deadline_epoch"),
@@ -1146,7 +1156,10 @@ class Scheduler:
     def _upload(self, job: dict) -> dict:
         outputs, assets = job.get("outputs") or [], []
         report = None
-        if self.storage_factory:
+        if self._provider_name(job) == "mock" and job.get("workflow_key") == "wan21-vace-v2v":
+            # A mock VACE run remains local even when real jobs use Drive storage.
+            storage = None
+        elif self.storage_factory:
             storage = self._factory(self.storage_factory, job)
         elif os.getenv("GPU_STORAGE", "local").strip().lower() == "drive":
             from .drive import DriveStorage
@@ -1325,7 +1338,40 @@ class Scheduler:
             job.get("owner_id"),
         )
 
+    def _discard_staged_video(self, job: dict) -> None:
+        """Best-effort removal of this job's private Drive staging copy, never the source asset."""
+        staged = job.get("staged_video") or {}
+        file_id = staged.get("id")
+        if self._provider_name(job) != "colab" or not file_id:
+            return
+        try:
+            from .drive import DriveStorage
+            from .runtime_worker import DRIVE_ID
+
+            if not isinstance(file_id, str) or not DRIVE_ID.fullmatch(file_id):
+                return
+            key = f"inputs/{job['id']}/input_video.mp4"
+            key_hash = hashlib.sha256(key.encode()).hexdigest()
+            records = [row for row in self._list("files", job["owner_id"])
+                       if row.get("kind") == "drive_file" and row.get("state") == "verified"
+                       and row.get("storage_key") == key and row.get("key_hash") == key_hash
+                       and row.get("remote_id") == file_id and row.get("sha256") == staged.get("sha256")]
+            if not records:
+                return
+            storage = DriveStorage(job, self.store)
+            try:
+                response = storage._request("DELETE", storage.base_url + "/files/" + file_id, retryable=False)  # noqa: SLF001
+            finally:
+                storage.close()
+            if response.status_code not in {204, 404}:
+                raise RuntimeError("Drive staging cleanup failed")
+            for row in records:
+                self.db_store.delete("gpu_files", row["id"], job["owner_id"])
+        except Exception:  # noqa: BLE001 - must never prevent GPU cleanup
+            self._event(job, job.get("state", "cleaning_up"), "Drive 临时片段未能删除，可稍后手动清理", None)
+
     def _finish_cleanup(self, job: dict, state: str, message: str, **patch) -> dict:
+        self._discard_staged_video(job)
         if state in {"completed", "cancelled"} and job.get("error_code") in {
             "gpu_cleanup_pending", "gpu_instance_completion_pending",
         }:
@@ -1489,6 +1535,7 @@ class Scheduler:
                     cleanup_final_state="cancelled",
                 )
             else:
+                self._discard_staged_video(job)
                 return self._set_state(job, "cancelled", "GPU job cancelled", requested_outcome="cancelled")
         if job.get("state") == "cleanup_pending":
             return self._cleanup(job)
@@ -1506,10 +1553,47 @@ class Scheduler:
         if state == "validating":
             return self._validate(job)
         if state == "waiting_for_capacity":
+            if (job.get("snapshot") or {}).get("input_video") and not job.get("staged_video"):
+                from app.common import APIError
+
+                from .vace_video import stage_video
+
+                try:
+                    # The ordinary scheduler claim may expire during a large Drive transfer.
+                    # A separate process-safe lock prevents two workers from staging the same job.
+                    with self.db_store.upload_lock("vace-stage:" + job["id"]) as acquired:
+                        if not acquired:
+                            return job
+                        current = self._get("jobs", job["id"], job.get("owner_id"))
+                        if not current or current.get("cancel_requested") or current.get("state") != state:
+                            return current or job
+                        if current.get("staged_video"):
+                            job = current
+                        else:
+                            self._event(job, state, "正在校验并准备原视频片段（尚未申请 GPU）", None)
+                            staged = stage_video(job, self.db_store, self.store)
+                            current = self._get("jobs", job["id"], job.get("owner_id"))
+                            if not current or current.get("cancel_requested") or current.get("state") != state:
+                                self._discard_staged_video({**job, "staged_video": staged})
+                                return current or job
+                            job = self._update("jobs", job["id"], {"staged_video": staged}, job.get("owner_id"))
+                            message = ("模拟任务已在本地校验视频片段" if staged.get("mock")
+                                       else "原视频片段已上传并校验")
+                            self._event(job, state, message, None)
+                except APIError as exc:
+                    return self._begin_failure(job, exc.code.lower(), exc.message)
+                except Exception as exc:
+                    return self._begin_failure(job, "video_staging_failed", self._safe_error(exc))
             # CPU cache preparation owns the first wait.  Do not allocate a
             # durable/runtime instance until the prep decision is settled.
             if self._await_prep(job):
                 return job if job.get("awaiting_prep") else self._update("jobs", job["id"], {"awaiting_prep": True}, job.get("owner_id"))
+            if ((job.get("snapshot") or {}).get("input_video") and self._provider_name(job) == "colab"
+                    and os.getenv("GPU_PREP", "on").strip().lower() != "off"):
+                preps = prep_jobs_for(self.store, job["owner_id"], job["snapshot"],
+                                      drive_account_id=job.get("drive_account_id") or job.get("account_id"))
+                if preps and not any(item.get("state") == "completed" for item in preps):
+                    return self._begin_failure(job, "video_model_cache_failed", "CPU 模型缓存准备失败，请查看缓存任务后重试")
             if self._is_v020_job(job):
                 allocated = self._allocate_instance(job)
                 if allocated.get("state") in TERMINAL_STATES | {"cleaning_up", "cleanup_pending"}:

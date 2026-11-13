@@ -11,6 +11,7 @@ from .gpu.rates import estimate as estimate_units
 from .gpu.rates import length_factor, mode_param
 from .gpu.registry import Registry
 from .gpu.repository import Repository
+from .gpu.vace_video import resolve_video_input
 from .job_schemas import normalize_policy
 
 
@@ -134,6 +135,9 @@ def admit_job(st, user, body, key, *, validate_only=False):
         raise APIError("WORKFLOW_UNPUBLISHED", "工作流未发布或与模型不匹配", 404)
     if workflow.get("state") != "published" or workflow["model_id"] != body["model_id"]:
         raise APIError("WORKFLOW_UNPUBLISHED", "工作流未发布或与模型不匹配")
+    if (workflow.get("workflow_key") == "wan21-vace-v2v" and policy["provider"] == "colab"
+            and not policy.get("account_id")):
+        raise APIError("ACCOUNT_REQUIRED", "视频重绘需要明确选择 Colab 账号及其关联的 Drive 账号", 422)
     model = next((m for m in registry.models(user["id"]) if m["model_id"] == body["model_id"]), None)
     if not model or not model.get("enabled"):
         raise APIError("MODEL_UNAVAILABLE", "模型尚未通过许可、权重与硬件验证")
@@ -149,6 +153,9 @@ def admit_job(st, user, body, key, *, validate_only=False):
     bind_params, input_files = resolve_input_images(
         lambda aid: own(st, "assets", aid, user), project["id"], workflow["manifest"], params
     )
+    bind_params, input_video = resolve_video_input(
+        lambda aid: own(st, "assets", aid, user), project["id"], workflow["manifest"], bind_params
+    )
     bound = bind_parameters(workflow["manifest"], workflow["api_graph"], bind_params)
     for asset_id in body["asset_ids"]:
         asset = own(st, "assets", asset_id, user)
@@ -161,6 +168,7 @@ def admit_job(st, user, body, key, *, validate_only=False):
         "resolved_params": params,
         "bound_graph": bound,
         "input_files": input_files,
+        **({"input_video": input_video} if input_video else {}),
         "workflow_sha256": workflow["sha256"],
         "model_revision": model.get("revision"),
         "dependency_lock": workflow["manifest"].get("dependencies", {}),

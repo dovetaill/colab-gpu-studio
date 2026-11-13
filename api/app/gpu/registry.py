@@ -52,6 +52,13 @@ _PUBLISH_NODE_ALLOWLIST = {
     "MiniMaxH3ReferenceToVideo",
     "MiniMaxH3SigmaShift",
     "ConditioningKrea2Rebalance",
+    # Pinned ComfyUI core nodes used by Wan2.1 VACE's video-control graph.
+    "LoadVideo",
+    "GetVideoComponents",
+    "Canny",
+    "WanVaceToVideo",
+    "TrimVideoLatent",
+    "ModelSamplingSD3",
 }
 
 

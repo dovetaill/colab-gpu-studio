@@ -14,7 +14,7 @@ const FAILED = ['failed', 'failed_final', 'cancelled', 'cancelled_local', 'block
 type Filter = 'all' | 'running' | 'completed' | string;
 
 export function TasksPanel({
-  jobs, error, refreshing, onRefresh, onCancel, onRetry, onDetail, onRetain, onInstance,
+  jobs, error, refreshing, onRefresh, onCancel, onRetry, onDetail, onRetain, onInstance, onAssemble,
 }: {
   jobs: GpuJob[];
   error: string;
@@ -25,6 +25,7 @@ export function TasksPanel({
   onDetail: (job: GpuJob) => void;
   onRetain?: (job: GpuJob) => void;
   onInstance?: (job: GpuJob) => void;
+  onAssemble?: (batchId: string) => void;
 }) {
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
@@ -46,6 +47,21 @@ export function TasksPanel({
     running: uniqueJobs.filter(isActive).length,
     completed: uniqueJobs.filter((j) => DONE.includes(String(j.state || '').toLowerCase())).length,
   }), [uniqueJobs]);
+  const videoBatches = useMemo(() => {
+    const groups = new Map<string, GpuJob[]>();
+    uniqueJobs.forEach((job) => {
+      if (job.workflow_key !== 'wan21-vace-v2v' || typeof job.batch_id !== 'string') return;
+      groups.set(job.batch_id, [...(groups.get(job.batch_id) || []), job]);
+    });
+    function effective(job: GpuJob, visited = new Set<string>()): GpuJob {
+      if (DONE.includes(String(job.state || '').toLowerCase()) || visited.has(job.id)) return job;
+      visited.add(job.id);
+      const children = uniqueJobs.filter((item) => item.retry_of === job.id).map((item) => effective(item, visited));
+      return children.find((item) => DONE.includes(String(item.state || '').toLowerCase())) || children[0] || job;
+    }
+    return [...groups.entries()].filter(([, group]) => group.length > 1)
+      .map(([id, group]) => ({ id, group, effective: group.map((job) => effective(job)) }));
+  }, [uniqueJobs]);
 
   const filtered = uniqueJobs.filter((job) => {
     const s = stateOf(job);
@@ -69,6 +85,14 @@ export function TasksPanel({
       </div>
 
       {error && <p className="status error" role="alert">{error}</p>}
+
+      {videoBatches.map(({ id, group, effective }) => (
+        <div className={styles.notice} key={id}>
+          <p className="small">视频批次 {id.slice(0, 8)}：共 {group.length} 段，已完成 {effective.filter((job) => DONE.includes(stateOf(job))).length} 段，失败或取消 {effective.filter((job) => FAILED.includes(stateOf(job))).length} 段。</p>
+          <p className="muted small">失败片段请在任务列表单独重试；成功的片段会复用。重试任务完成后可合成，系统会自动查找对应成功结果。</p>
+          {onAssemble && <button type="button" className="button secondary small" onClick={() => onAssemble(id)}>合成完整视频</button>}
+        </div>
+      ))}
 
       <label className={styles.searchBox}>
         <Search size={17} strokeWidth={1.6} aria-hidden />
@@ -105,7 +129,7 @@ export function TasksPanel({
             const running = RUNNING.includes(s);
             const failed = FAILED.includes(s);
             const waiting = WAITING.includes(s);
-            const video = /i2v|video|ref2v|t2v/i.test(job.workflow_key || '');
+            const video = /i2v|video|ref2v|t2v|v2v/i.test(job.workflow_key || '');
             const thumb = done && job.output_asset_ids?.[0] && !video ? `/api/assets/${job.output_asset_ids[0]}/thumbnail` : '';
             const size = jobSize(job);
             const err = job.error_message || job.error;
@@ -135,6 +159,8 @@ export function TasksPanel({
                       {[video ? '视频' : '图片', size, job.provider === 'mock' ? '模拟' : job.provider === 'colab' ? 'Colab' : ''].filter(Boolean).join(' · ')}
                     </p>
                     <p className="muted small">创建于 {formatDateTime(job.created_at)}</p>
+                    {job.workflow_key === 'wan21-vace-v2v' && Boolean(job.batch_id) && <p className="muted small">片段 {Number(job.queue_order || 0) + 1} · 批次 {String(job.batch_id).slice(0, 8)}</p>}
+                    {job.workflow_key === 'wan21-vace-v2v' && typeof job.retry_of === 'string' && <p className="muted small">重试片段 {job.retry_of.slice(0, 8)}</p>}
                     {instanceId ? <button type="button" className={styles.linkButton} onClick={() => onInstance?.(job)}>{machineInfo}</button>
                       : <p className="muted small">{machineInfo}</p>}
                   </div>

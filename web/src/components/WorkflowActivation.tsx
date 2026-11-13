@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  acceptGpuWorkflowSmoke, apiMessage, getGpuComputeSpecs, getGoogleAccounts, getReferenceAssets, getWorkflowActivation,
+  acceptGpuWorkflowSmoke, apiMessage, getGpuComputeSpecs, getGpuSettings, getGoogleAccounts, getReferenceAssets, getWorkflowActivation,
   publishGpuWorkflow, realSmokeGpuWorkflow, reviewGpuModel, reviewGpuWorkflow, uploadAsset, validateGpuWorkflow, getGpuJob,
-  type ActivationInput, type ComputeSpec, type GalleryAsset, type GpuWorkflow, type WorkflowActivation,
+  type ActivationInput, type ComputeSpec, type GalleryAsset, type GpuSettings, type GpuWorkflow, type WorkflowActivation,
 } from '../lib/gpu-api';
 import {
   activationSmokeParams, appendActivationLog, getActivationStep, getSmokeRuntimeMinutes, hasExistingSmoke,
@@ -52,6 +52,9 @@ export function WorkflowActivationPanel({
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [consent, setConsent] = useState(false);
+  const [visualAcceptance, setVisualAcceptance] = useState(false);
+  const [settings, setSettings] = useState<GpuSettings | null>(null);
+  const [accountBudget, setAccountBudget] = useState<unknown>(null);
   const [accountId, setAccountId] = useState('');
   const [spec, setSpec] = useState<ComputeSpec | null>(null);
   const [specsLoaded, setSpecsLoaded] = useState(false);
@@ -180,6 +183,10 @@ export function WorkflowActivationPanel({
       if (!isSmokeCompleted(snapshot)) {
         throw new Error(snapshot.smoke?.error_message || '冒烟未通过，详见任务详情');
       }
+      if (workflow.workflow_key === 'wan21-vace-v2v' && shouldAcceptSmoke(snapshot) && !visualAcceptance) {
+        say('冒烟已完成，请先打开任务并播放输出，确认画面、音轨和释放状态后再验收。', token);
+        return;
+      }
       if (shouldAcceptSmoke(snapshot)) {
         if (!snapshot.smoke?.job_id) throw new Error('找不到可验收的冒烟任务');
         say('正在验收冒烟输出…', token);
@@ -203,7 +210,7 @@ export function WorkflowActivationPanel({
       runningRef.current = false;
       if (isCurrent(token)) setBusy(false);
     }
-  }, [accountId, busy, consent, inputs, isCurrent, onDone, projectId, refresh, say, spec, waitForSmoke, workflow.id]);
+  }, [accountId, busy, consent, inputs, isCurrent, onDone, projectId, refresh, say, spec, waitForSmoke, workflow.id, workflow.workflow_key, visualAcceptance]);
 
   useEffect(() => {
     aliveRef.current = true;
@@ -225,8 +232,9 @@ export function WorkflowActivationPanel({
           }
           return;
         }
-        const accounts = await getGoogleAccounts();
+        const [accounts, currentSettings] = await Promise.all([getGoogleAccounts(), getGpuSettings()]);
         if (!isCurrent(token)) return;
+        setSettings(currentSettings);
         const request = resolveGpuCheckRequest(
           { real_enabled: snapshot.real_enabled, offline_mode: false },
           accounts,
@@ -245,6 +253,7 @@ export function WorkflowActivationPanel({
           ? '当前账号没有可用的模板指定 GPU 规格，请检查 Colab 账号支持的显卡。'
           : '当前账号没有可用的真实 GPU 规格（已过滤 CPU/TPU）');
         setAccountId(request.accountId);
+        setAccountBudget(accounts.find((account) => account.account_id === request.accountId)?.budget ?? null);
         setSpec(eligible);
       } catch (err) {
         if (isCurrent(token)) setError(apiMessage(err));
@@ -266,7 +275,7 @@ export function WorkflowActivationPanel({
     }
     let alive = true;
     getReferenceAssets(projectId).then((rows) => {
-      if (alive) setAssets(rows.filter((asset) => String(asset.mime || '').startsWith('image/')));
+      if (alive) setAssets(rows.filter((asset) => /^(image|video)\//.test(String(asset.mime || ''))));
     }).catch(() => undefined);
     return () => { alive = false; };
   }, [projectId]);
@@ -298,7 +307,7 @@ export function WorkflowActivationPanel({
 
   async function uploadFor(input: ActivationInput, file: File) {
     if (!projectId) {
-      setError('请先在顶栏选择项目，再上传图片。');
+    setError('请先在顶栏选择项目，再上传素材。');
       return;
     }
     setUploading(input.key);
@@ -319,6 +328,12 @@ export function WorkflowActivationPanel({
       <p className="muted small">
         这一步会真实分配 GPU 跑一次冒烟（{runtimeText(runtimeLimit)}，按实际用量计费）。通过后自动发布并设为当前版本。发布是单独的一步，不会在冒烟排队时一直空转。
       </p>
+      {workflow.workflow_key === 'wan21-vace-v2v' && needsNewSmoke && <p className="muted small">
+        模型：Wan2.1 VACE 1.3B · 目标规格：{spec ? String(spec.gpu || spec.name || JSON.stringify(spec.key)) : '待确认'} · 实际 GPU：申请后确认。
+        运行上限：{runtimeText(runtimeLimit)}；上限估算：{typeof settings?.budget?.unit_rate === 'number' && runtimeLimit !== null ? `${(settings.budget.unit_rate * runtimeLimit).toFixed(3)} CU` : '费率待确认'}。
+        账号日预算：{typeof accountBudget === 'object' && accountBudget !== null ? String((accountBudget as Record<string, unknown>).daily_units ?? (accountBudget as Record<string, unknown>).daily ?? '未设置') : '待确认'} CU。
+        模型缓存状态：待任务确认；首次 CPU 缓存准备也可能消耗 CU。
+      </p>}
       <p className="muted small">
         {projectId
           ? `新的冒烟任务记在当前项目「${projectTitle || '当前项目'}」里，可以在这个项目的任务页看到。`
@@ -337,16 +352,19 @@ export function WorkflowActivationPanel({
       ) : null}
       {needsNewSmoke && requiredInputs.length ? (
         <div className={styles.stack}>
-          <p className="small">这个工作流的冒烟需要图片。没有填必填项时不会提交，也不会跳过校验。</p>
+          <p className="small">请选择冒烟素材。没有填必填项时不会提交，也不会跳过校验。</p>
           {requiredInputs.map((input) => (
             <div className={styles.paramField} key={input.key}>
               <div className={styles.paramLabel}>
                 <label htmlFor={`activation-${input.key}`}>{input.label}{input.required ? '（必填）' : '（可选）'}</label>
               </div>
-              <div className={styles.fileControl}>
+              {input.type === 'number' || input.type === 'integer' ? (
+                <input id={`activation-${input.key}`} type="number" min={0} step="0.01" value={inputs[input.key] ?? input.default ?? 0}
+                  onChange={(event) => setInputs((current) => ({ ...current, [input.key]: event.target.value }))} />
+              ) : <div className={styles.fileControl}>
                 <select id={`activation-${input.key}`} value={inputs[input.key] || ''} onChange={(event) => setInputs((current) => ({ ...current, [input.key]: event.target.value }))}>
-                  <option value="">{input.required ? '请选择或上传图片' : '不使用'}</option>
-                  {assets.map((asset) => <option key={asset.id} value={asset.id}>{asset.filename || asset.id}</option>)}
+                  <option value="">{input.required ? '请选择或上传素材' : '不使用'}</option>
+                  {assets.filter((asset) => asset.mime.startsWith(`${input.type}/`)).map((asset) => <option key={asset.id} value={asset.id}>{asset.filename || asset.id}</option>)}
                 </select>
                 <button className="button secondary small" type="button" disabled={uploading === input.key} onClick={() => fileRefs.current[input.key]?.click()}>
                   {uploading === input.key ? '上传中…' : '上传'}
@@ -355,14 +373,14 @@ export function WorkflowActivationPanel({
                   ref={(node) => { fileRefs.current[input.key] = node; }}
                   hidden
                   type="file"
-                  accept="image/png,image/jpeg,image/webp"
+                  accept={input.type === 'video' ? 'video/mp4,video/webm' : 'image/png,image/jpeg,image/webp'}
                   onChange={(event) => {
                     const file = event.target.files?.[0];
                     if (file) void uploadFor(input, file);
                     event.target.value = '';
                   }}
                 />
-              </div>
+              </div>}
               {input.description ? <span className={styles.hint}>{input.description}</span> : null}
             </div>
           ))}
@@ -394,6 +412,10 @@ export function WorkflowActivationPanel({
           <span>我知道会真实开 GPU 并产生费用</span>
         </label>
       ) : null}
+      {workflow.workflow_key === 'wan21-vace-v2v' && isSmokeCompleted(data) && !data?.done && <label className={styles.checkline}>
+        <input type="checkbox" checked={visualAcceptance} onChange={(event) => setVisualAcceptance(event.target.checked)} />
+        <span>我已播放冒烟输出，检查原片动作、声音及 GPU 释放，再验收并发布。</span>
+      </label>}
       {historyError ? <p role="alert" className={styles.errorText}>{historyError}</p> : null}
       {history ? <section aria-label="持久任务详情"><JobHistoryDetails job={history} /></section> : null}
       <div className="actions">
@@ -412,7 +434,7 @@ export function WorkflowActivationPanel({
         <button
           className="button"
           type="button"
-          disabled={busy || !specsLoaded || (needsNewSmoke && (!consent || missing.length > 0 || !projectId))}
+          disabled={busy || !specsLoaded || (needsNewSmoke && (!consent || missing.length > 0 || !projectId)) || (workflow.workflow_key === 'wan21-vace-v2v' && isSmokeCompleted(data) && !data?.done && !visualAcceptance)}
           onClick={() => void runAll()}
         >
           {busy ? '执行中…' : data?.done ? '重新检查' : existingSmoke ? '继续验收并启用' : '一键跑通并启用'}

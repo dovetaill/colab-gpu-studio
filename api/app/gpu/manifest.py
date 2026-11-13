@@ -340,7 +340,7 @@ def validate_manifest(manifest: dict, api_graph: dict, object_info: dict) -> dic
         "number": {"FLOAT", "NUMBER", "INT"},
         "boolean": {"BOOL", "BOOLEAN"},
         "image": {"IMAGE", "ENUM"},  # LoadImage.image is a COMBO of file names
-        "video": {"VIDEO"},
+        "video": {"VIDEO", "ENUM", "COMBO"},
         "asset": {"IMAGE", "VIDEO", "STRING"},
         "enum": {"STRING", "ENUM", "COMBO"},
         "array": {"LIST", "ARRAY"},
@@ -354,6 +354,15 @@ def validate_manifest(manifest: dict, api_graph: dict, object_info: dict) -> dic
         spec = copy.deepcopy(dict(raw))
         kind = _type(spec.get("type"))
         spec["type"] = kind
+        if spec.get("stage") == "video_preprocess":
+            allowed = {"start_seconds": "number", "keep_audio": "boolean"}
+            if (normalized.get("workflow_key") != "wan21-vace-v2v" or allowed.get(name) != kind
+                    or "binding" in spec or "variants" in spec):
+                _fail(f"参数 {name} 的视频预处理定义无效")
+            if "default" in spec:
+                _check(name, spec, spec["default"])
+            output[name] = spec
+            continue
         if "variants" in spec:
             _check_variants(name, spec, graph, object_info)
             output[name] = spec
@@ -491,7 +500,7 @@ def bind_parameters(manifest: dict, api_graph: dict, resolved: dict) -> dict:
         _fail(f"未知参数: {sorted(unknown)!r}")
     graph = copy.deepcopy(dict(api_graph))
     for name, spec in definitions.items():
-        if name not in resolved or "variants" in spec:
+        if name not in resolved or "variants" in spec or spec.get("stage") == "video_preprocess":
             continue
         if not isinstance(spec, Mapping):
             _fail(f"参数 {name}定义无效")

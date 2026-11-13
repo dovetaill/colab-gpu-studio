@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { Image as ImageIcon, Film, Search, Star, Check, Eye, RotateCcw, Trash2, Play } from 'lucide-react';
-import { assetUrl, type GalleryAsset } from '../lib/gpu-api';
+import { assetPreviewUrl, assetUrl, type GalleryAsset } from '../lib/gpu-api';
 import styles from '../gpu.module.css';
 
 type Filter = 'all' | 'image' | 'video' | 'favorite';
@@ -74,7 +74,7 @@ export function GalleryPanel({
                   <button className={styles.tileCover} type="button" aria-label={`查看 ${asset.filename || '作品'}`}
                     onClick={() => { setSelectedId(asset.id); setConfirmDelete(false); onOpen(asset); }}>
                     {isVideo ? (
-                      <video src={assetUrl(asset)} preload="metadata" muted playsInline aria-label={asset.filename || '视频'} />
+                      <video src={assetPreviewUrl(asset)} preload="metadata" muted playsInline aria-label={asset.filename || '视频'} />
                     ) : isJson ? (
                       <span className={styles.tileJson}>JSON<small>诊断文件</small></span>
                     ) : (

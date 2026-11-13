@@ -295,6 +295,39 @@ class MockGPUExecutor:
         from .mock_sessions import MockWorkerSessions
         MockWorkerSessions.finish(state['runtime'],state['owner_id'],job['execution_id'])
         self._active = max(0, self._active - 1)
+        spec = (job.get("snapshot") or {}).get("input_video")
+        if job.get("workflow_key") == "wan21-vace-v2v" and isinstance(spec, dict):
+            # A synthetic color pattern is visibly different from source footage.
+            # It is a local mock artifact, never a model-generated video.
+            import subprocess
+            import tempfile
+            from pathlib import Path
+
+            width, height, fps, length = (spec[k] for k in ("width", "height", "fps", "length"))
+            if (not isinstance(width, int) or not isinstance(height, int)
+                    or not isinstance(length, int) or not isinstance(fps, (int, float))
+                    or not 256 <= width <= 832 or not 256 <= height <= 832
+                    or width * height > 832 * 480 or not 17 <= length <= 81 or not 8 <= fps <= 24):
+                raise ComputeError("mock video parameters invalid")
+            with tempfile.TemporaryDirectory(prefix="studio-vace-mock-") as folder:
+                target = Path(folder) / "mock-vace.mp4"
+                try:
+                    subprocess.run(
+                        ["ffmpeg", "-v", "error", "-nostdin", "-f", "lavfi", "-i",
+                         f"testsrc2=size={width}x{height}:rate={fps}", "-frames:v", str(length),
+                         "-c:v", "libx264", "-threads", "2", "-pix_fmt", "yuv420p",
+                         "-movflags", "+faststart", "-y", str(target)],
+                        capture_output=True, check=True, timeout=120,
+                    )
+                    if not 0 < target.stat().st_size <= 100 * 1024 * 1024:
+                        raise ComputeError("mock video output exceeds limit")
+                    content = target.read_bytes()
+                except (OSError, subprocess.SubprocessError) as exc:
+                    raise ComputeError("mock video creation failed") from exc
+            output = {"filename": "MOCK-vace-test-pattern.mp4", "content": content,
+                      "mime": "video/mp4", "metadata": {"mock": True, "label": "MOCK"}}
+            self.outputs.append(output)
+            return {"state": "completed", "outputs": [output], "timings": {"mock_video": 0.0}}
         output = {
             "filename": "mock-output.png",
             "content": state["output"],

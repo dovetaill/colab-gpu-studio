@@ -11,7 +11,7 @@ from .manifest import digest
 # Standard CPU runtime (~0.07 CU/h); the prep job never needs a GPU.
 PREP_SPEC_KEY = {"variant": "VARIANT_CPU", "accelerator": "NONE", "shape": "SHAPE_STANDARD"}
 PREP_MAX_MINUTES = 40
-_DROP = {"bound_graph", "resolved_params", "workflow_smoke", "system_smoke", "target_workflow_id", "target_model_id"}
+_DROP = {"bound_graph", "resolved_params", "workflow_smoke", "system_smoke", "target_workflow_id", "target_model_id", "input_video", "input_files"}
 
 
 def prep_unit_rate() -> float:

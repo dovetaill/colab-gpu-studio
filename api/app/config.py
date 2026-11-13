@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     session_secret: str = ""
     environment: str = "development"
     max_upload_bytes: int = 100 * 1024 * 1024
+    max_video_upload_bytes: int = 512 * 1024 * 1024
+    max_video_duration_seconds: int = 3600
+    max_video_dimension: int = 4096
     allowed_hosts: list[str] = []
     studio_api_token: str = ""
 

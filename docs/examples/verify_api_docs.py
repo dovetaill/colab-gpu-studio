@@ -22,6 +22,7 @@ import httpx
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from app import __version__
 from app.config import settings
 from app.db import Store
 from app.gpu.inputs import resolve_input_images
@@ -55,7 +56,7 @@ def check(label, condition):
     checks.append(label)
 
 with TestClient(app) as client:
-    check("health version", client.get('/api/health').json()['version'] == '0.1.31-dev.8')
+    check("health version", client.get('/api/health').json()['version'] == __version__)
     check("missing auth rejected", client.get('/api/gpu/projects').status_code == 401)
     login = client.post('/api/auth/login', json={'password': 'offline-test-password'})
     check("login returns direct access_token", 'access_token' in login.json() and 'data' not in login.json())
@@ -120,7 +121,7 @@ with TestClient(app) as client:
     (output_dir/'openapi.json').write_text(json.dumps(schema,ensure_ascii=False,indent=2),encoding='utf-8')
 
 check("zero outbound network attempts", len(NETWORK_ATTEMPTS)==0)
-report={'application_version':'0.1.31-dev.8','source_commit':'7b91190bed6fe5cea02d92c6ff039f64c7ebe497',
+report={'application_version':__version__,'source_commit':os.getenv('DOCS_SOURCE_COMMIT'),
         'verification':'isolated local Mock, TestClient, real network denied', 'passed_checks':checks,
         'passed_count':len(checks),'real_network_attempts':len(NETWORK_ATTEMPTS),
         'paid_gpu_started':False,'production_accessed':False,

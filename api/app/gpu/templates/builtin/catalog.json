@@ -2,6 +2,13 @@
   "catalog_version": 1,
   "workflows": [
     {
+      "file": "wan21-vace-v2v-1.0.0.json",
+      "workflow_key": "wan21-vace-v2v",
+      "version": "1.0.0",
+      "model_id": "wan21-vace-1.3b",
+      "title": "Wan2.1 VACE 1.3B 视频重绘"
+    },
+    {
       "file": "krea2-moss-dual-t2i-1.0.0.json",
       "workflow_key": "krea2-moss-dual-t2i",
       "version": "1.0.0",
