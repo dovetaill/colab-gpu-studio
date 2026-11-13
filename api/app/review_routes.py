@@ -29,11 +29,15 @@ from .gpu.rates import estimate as estimate_units
 from .gpu.rates import mode_param
 from .gpu.repository import Repository
 from .gpu.runtime_worker import REVIEWED_CUSTOM_NODES, _reviewed_custom_nodes, _validate_weights
-from .gpu.scheduler import Scheduler
+from .gpu.scheduler import ACTIVE_STATES, Scheduler
 from .gpu.vace_video import resolve_video_input
 from .storage import read_asset
 
 router = APIRouter(prefix="/api/gpu")
+
+# All scheduler stages occupy the same smoke attempt, including cleanup.  A
+# new request must not allocate another runtime while any of them is active.
+_SMOKE_IN_PROGRESS = ACTIVE_STATES | {"pending"}
 
 _COMMIT = re.compile(r"^[0-9a-fA-F]{40}$")
 _SOURCE_HOSTS = {"huggingface.co", "www.huggingface.co", "github.com", "www.github.com"}
@@ -507,7 +511,7 @@ def _job_matches_smoke(job: Mapping, workflow_id: str, row: Mapping, model: Mapp
 
 def _reusable_smoke_job(repo: Repository, owner: str, workflow_id: str, row: Mapping, model: Mapping, signature: str):
     for job in repo.list("jobs", owner):
-        if job.get("state") not in {"queued", "running", "completed"}:
+        if job.get("state") not in _SMOKE_IN_PROGRESS | {"completed"}:
             continue
         if job.get("smoke_accepted") is True:
             continue
@@ -701,6 +705,18 @@ def real_smoke(
             202,
         )
 
+    compatibility = _smoke_compatibility_signature(
+        workflow_id, row, model.get("revision"), snapshot_parts=snapshot_parts
+    )
+    # Resuming a known attempt is read-only and must not depend on another GPU
+    # being available or on budget remaining for an unnecessary second run.
+    with st.dispatch_lock() as acquired:
+        if not acquired:
+            raise APIError("SCHEDULER_BUSY", "调度正在同步，请稍后用相同幂等键重试", 503, True)
+        reusable = _reusable_smoke_job(repo, user["id"], workflow_id, row, model, compatibility)
+        if reusable:
+            return _smoke_response(reusable, request, resumed=True)
+
     if not cfg.real_enabled:
         raise APIError("REAL_GPU_DISABLED", "GPU_REAL_ENABLED尚未启用")
     if cfg.unit_rate is None or cfg.unit_rate <= 0:
@@ -751,12 +767,7 @@ def real_smoke(
     with st.dispatch_lock() as acquired:
         if not acquired:
             raise APIError("SCHEDULER_BUSY", "调度正在同步，请稍后用相同幂等键重试", 503, True)
-        compatibility = _smoke_compatibility_signature(
-            workflow_id,
-            row,
-            model.get("revision"),
-            snapshot_parts=snapshot_parts,
-        )
+        # Another request may have created the attempt during provider checks.
         reusable = _reusable_smoke_job(repo, user["id"], workflow_id, row, model, compatibility)
         if reusable:
             return _smoke_response(reusable, request, resumed=True)
@@ -1047,8 +1058,14 @@ def workflow_activation(
             and row.get("smoke_test_kind") == "real"
             and row.get("smoke_test_passed") is True
         )
-        states = {"completed": 1, "running": 2, "queued": 3, "failed": 4, "cancelled": 5}
-        return 0 if accepted else states.get(job.get("state"), 6)
+        state = job.get("state")
+        if accepted:
+            return 0
+        if state == "completed":
+            return 1
+        if state in _SMOKE_IN_PROGRESS:
+            return 2
+        return {"failed": 3, "cancelled": 4}.get(state, 5)
 
     # Prefer a successful pending artifact over a newer failed retry.  The
     # second stable sort keeps the newest job within the same lifecycle state.
@@ -1078,7 +1095,7 @@ def workflow_activation(
             smoke_acceptance_state = "published" if published else "accepted"
         elif smoke_completed:
             smoke_acceptance_state = "pending"
-        elif smoke_state in {"queued", "running"}:
+        elif smoke_state in _SMOKE_IN_PROGRESS:
             smoke_acceptance_state = "pending"
         else:
             smoke_acceptance_state = "failed"
@@ -1102,7 +1119,7 @@ def workflow_activation(
             "key": "real_smoke",
             "label": "真实 GPU 冒烟" if runtime_cap is None else f"真实 GPU 冒烟（≤{runtime_cap} 分钟）",
             "done": smoke_done or smoke_completed,
-            "running": smoke_state in {"queued", "running"},
+            "running": smoke_state in _SMOKE_IN_PROGRESS,
             "failed": smoke_state == "failed",
         },
         {"key": "accept_smoke", "label": "验收冒烟结果", "done": smoke_done},
@@ -1143,7 +1160,7 @@ def workflow_activation(
                 "error_message": smoke.get("error_message"),
                 "acceptance_state": smoke_acceptance_state,
                 "max_runtime_minutes": smoke.get("max_runtime_minutes") or runtime_cap,
-                "reusable": bool(smoke_state in {"queued", "running", "completed"} and not smoke_accepted),
+                "reusable": bool(smoke_state in _SMOKE_IN_PROGRESS | {"completed"} and not smoke_accepted),
             },
             "required_inputs": activation_inputs(row.get("manifest")),
             "smoke_job_completed": smoke_completed,

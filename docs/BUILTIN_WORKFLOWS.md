@@ -11,7 +11,7 @@
 | `moss-image-sft-t2i-1.0.0.json` | MOSS 单图 | 1.0.0 | T4 | OpenMOSS SFT (int8) 标准文生图 |
 | `minimax-h3-i2v-1.1.0.json` | MiniMax H3 首尾帧视频 | 1.1.0 | L4 | 上传首帧（可加尾帧）生成带原生声音的短视频，挂了 8 步加速 LoRA |
 | `minimax-h3-ref2v-1.4.0.json` | MiniMax H3 多参考图视频 | 1.4.0 | L4 | 最多垫 6 张参考图锁角色/画风生成有声视频，功能最全（见下） |
-| `wan21-vace-v2v-1.0.0.json` | Wan2.1 VACE 原视频重绘 | 1.0.0 | L4（待实测） | Canny 控制及原音轨；Draft、真实 GPU 未验证，见 [VACE 文档](WAN_VACE_V2V.md) |
+| `wan21-vace-v2v-1.0.0.json` | Wan2.1 VACE 原视频重绘 | 1.0.0 | L4 | Canny 控制及原音轨；真实 GPU 冒烟已生成视频，待人工验收，见 [VACE 文档](WAN_VACE_V2V.md) |
 
 ### Krea2 胶片精修：为什么内置只带 4 个 LoRA
 

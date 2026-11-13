@@ -120,7 +120,8 @@ def smoke_body(workflow_id, key, prompt):
     }
 
 
-def test_real_smoke_resumes_compatible_job_even_when_random_params_and_key_change(monkeypatch):
+@pytest.mark.parametrize("state", sorted(review_routes._SMOKE_IN_PROGRESS))
+def test_real_smoke_resumes_compatible_job_even_when_random_params_and_key_change(monkeypatch, state):
     st = Store("sqlite:///:memory:")
     repo = Repository(st)
     workflow = setup_workflow(repo)
@@ -137,6 +138,14 @@ def test_real_smoke_resumes_compatible_job_even_when_random_params_and_key_chang
             st,
         )
     )
+    repo.update("jobs", first["job_id"], {"state": state}, OWNER["id"])
+
+    # Resuming must not recheck availability or reserve a second GPU budget.
+    def unexpected_check(*_args, **_kwargs):
+        pytest.fail("an existing smoke must not request a new GPU or budget")
+
+    monkeypatch.setattr(review_routes.GoogleColabProvider, "list_specs", unexpected_check)
+    monkeypatch.setattr(review_routes, "_budget_check", unexpected_check)
     second = body(
         review_routes.real_smoke(
             workflow["id"],
@@ -150,6 +159,12 @@ def test_real_smoke_resumes_compatible_job_even_when_random_params_and_key_chang
     assert second["job_id"] == first["job_id"]
     assert len(repo.list("jobs", OWNER["id"])) == 1
     assert second["resumed"] is True
+    activation = body(review_routes.workflow_activation(workflow["id"], request(), user=OWNER, st=st))
+    smoke_step = next(step for step in activation["steps"] if step["key"] == "real_smoke")
+    assert activation["smoke"]["state"] == state
+    assert activation["smoke"]["acceptance_state"] == "pending"
+    assert activation["smoke"]["reusable"] is True
+    assert smoke_step["running"] is True and not smoke_step["done"]
 
 
 def test_failed_smoke_is_not_reused_and_can_start_a_new_attempt(monkeypatch):
@@ -199,6 +214,35 @@ def test_failed_smoke_is_not_reused_and_can_start_a_new_attempt(monkeypatch):
 
     assert result["job_id"] != failed["id"]
     assert len(repo.list("jobs", OWNER["id"])) == 2
+
+
+@pytest.mark.parametrize("state", ["waiting_for_capacity", "preparing", "cleanup_pending"])
+def test_activation_prefers_running_attempt_over_newer_failure(monkeypatch, state):
+    monkeypatch.setattr(
+        review_routes.GpuConfig, "from_env",
+        lambda: GpuConfig(real_enabled=True, unit_rate=0.1, max_runtime_minutes=5),
+    )
+    st = Store("sqlite:///:memory:")
+    repo = Repository(st)
+    workflow = setup_workflow(repo)
+    signature = review_routes._smoke_compatibility_signature(workflow["id"], workflow, REVISION)
+    original, _ = repo.create_job("owner", {"project_id": "project-1", "execution_policy": {}}, "active")
+    failed, _ = repo.create_job("owner", {"project_id": "project-1", "execution_policy": {}}, "failed")
+    for job, job_state in ((original, state), (failed, "failed")):
+        repo.update("jobs", job["id"], {
+            "state": job_state,
+            "target_workflow_id": workflow["id"],
+            "target_model_id": workflow["model_id"],
+            "workflow_key": workflow["workflow_key"],
+            "workflow_version": workflow["workflow_version"],
+            "smoke_compatibility_signature": signature,
+            "snapshot": {"workflow_smoke": True, "smoke_compatibility_signature": signature},
+        }, "owner")
+
+    data = body(review_routes.workflow_activation(workflow["id"], request(), user=OWNER, st=st))
+    assert data["smoke"]["job_id"] == original["id"]
+    assert data["smoke"]["state"] == state
+    assert data["smoke"]["acceptance_state"] == "pending"
 
 
 def test_activation_prefers_completed_pending_acceptance_over_newer_failure_and_reports_cap(monkeypatch):

@@ -22,7 +22,10 @@ export type ActivationResumeSnapshot = {
   [key: string]: unknown;
 };
 
-const ACTIVE_SMOKE_STATES = new Set(['pending', 'queued', 'running']);
+const ACTIVE_SMOKE_STATES = new Set([
+  'pending', 'queued', 'validating', 'waiting_for_capacity', 'allocating', 'preparing',
+  'loading', 'running', 'uploading', 'cleaning_up', 'cleanup_pending',
+]);
 const COMPLETED_SMOKE_STATES = new Set(['completed', 'succeeded', 'success']);
 const FAILED_SMOKE_STATES = new Set(['failed', 'cancelled', 'canceled', 'error']);
 
@@ -42,7 +45,43 @@ function smokeJobId(snapshot: ActivationResumeSnapshot | null | undefined): stri
 }
 
 export function isSmokePolling(snapshot: ActivationResumeSnapshot | null | undefined): boolean {
-  return Boolean(smokeJobId(snapshot)) && ACTIVE_SMOKE_STATES.has(smokeState(snapshot));
+  return Boolean(smokeJobId(snapshot)) && isSmokeActiveState(smokeState(snapshot));
+}
+
+export function isSmokeActiveState(state: string | null | undefined): boolean {
+  return ACTIVE_SMOKE_STATES.has(String(state || '').toLowerCase());
+}
+
+function transientStatusError(error: unknown): boolean {
+  if (error instanceof TypeError || (error instanceof Error && error.name === 'AbortError')) return true;
+  if (!error || typeof error !== 'object') return false;
+  const status = (error as { status?: unknown }).status;
+  return typeof status === 'number' && (status === 0 || status === 408 || status === 429 || status >= 500);
+}
+
+/** Retry only read-only status requests. Never retry the paid smoke submission. */
+export async function readSmokeStatusWithRetry<T>(
+  read: () => Promise<T>,
+  isCurrent: () => boolean,
+  onRetry: (attempt: number) => void,
+  wait: (ms: number) => Promise<void>,
+): Promise<T | null> {
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (!isCurrent()) return null;
+    try {
+      return await read();
+    } catch (error) {
+      if (!isCurrent()) return null;
+      if (!transientStatusError(error)) throw error;
+      if (attempt === maxAttempts) {
+        throw new Error('暂时无法读取冒烟状态，任务可能仍在运行。请稍后刷新，不要重复启动。');
+      }
+      onRetry(attempt);
+      await wait(Math.min(3000 * 2 ** (attempt - 1), 12000));
+    }
+  }
+  return null;
 }
 
 export function isSmokeCompleted(snapshot: ActivationResumeSnapshot | null | undefined): boolean {

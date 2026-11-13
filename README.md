@@ -79,7 +79,7 @@
 | `moss-image-sft-t2i` | 1.0.0 | T4 | OpenMOSS 单张文生图 |
 | `minimax-h3-i2v` | 1.1.0 | L4 | 首帧（可选尾帧）生成有声短视频，带 8 步加速 LoRA |
 | `minimax-h3-ref2v` | 1.4.0 | L4 | 最多 6 张参考图生成有声视频，可选 4步/8步/精修/20步 与二次元无缝 VAE |
-| `wan21-vace-v2v` | 1.0.0 | L4（待实测） | 原视频 Canny 控制和原音轨；草稿，真实 GPU 未验收 |
+| `wan21-vace-v2v` | 1.0.0 | L4 | 原视频 Canny 控制和原音轨；真实 GPU 冒烟已生成视频，待人工验收 |
 
 详细说明与启用步骤见 [内置工作流说明](docs/BUILTIN_WORKFLOWS.md)。
 

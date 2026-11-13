@@ -7,7 +7,9 @@ import {
   getSmokeRuntimeMinutes,
   hasExistingSmoke,
   isSmokeCompleted,
+  isSmokeActiveState,
   isSmokePolling,
+  readSmokeStatusWithRetry,
   shouldCreateSmoke,
   shouldAcceptSmoke,
   smokeIdempotencyKey,
@@ -32,13 +34,64 @@ test('step decisions always use the refreshed activation snapshot', () => {
   assert.equal(getActivationStep(next, 'real_smoke')?.done, false);
 });
 
-test('queued and running smoke jobs are resumable and must not create another job', () => {
-  for (const state of ['queued', 'running']) {
+test('all scheduler stages are resumable and must not create another job', () => {
+  for (const state of ['pending', 'queued', 'validating', 'waiting_for_capacity', 'allocating', 'preparing',
+    'loading', 'running', 'uploading', 'cleaning_up', 'cleanup_pending']) {
     const current = snapshot({ smoke: { job_id: `job-${state}`, state } });
     assert.equal(hasExistingSmoke(current), true);
     assert.equal(isSmokePolling(current), true);
+    assert.equal(isSmokeActiveState(state), true);
     assert.equal(shouldCreateSmoke(current), false);
   }
+  assert.equal(isSmokeActiveState('completed'), false);
+});
+
+test('a temporary timeout retries only the status read and resumes the existing attempt', async () => {
+  let reads = 0;
+  const retries = [];
+  const waits = [];
+  const result = await readSmokeStatusWithRetry(
+    async () => {
+      reads += 1;
+      if (reads < 3) throw Object.assign(new Error('network timeout'), { status: 0, code: 'NETWORK_TIMEOUT' });
+      return snapshot({ smoke: { job_id: 'existing-job', state: 'completed' }, smoke_job_completed: true });
+    },
+    () => true,
+    (attempt) => retries.push(attempt),
+    async (ms) => { waits.push(ms); },
+  );
+  assert.equal(reads, 3);
+  assert.deepEqual(retries, [1, 2]);
+  assert.deepEqual(waits, [3000, 6000]);
+  assert.equal(result.smoke.job_id, 'existing-job');
+  assert.equal(shouldCreateSmoke(result), false);
+  assert.equal(shouldAcceptSmoke(result), true);
+});
+
+test('status retries are bounded, stop on cancellation, and do not hide authorization errors', async () => {
+  let attempts = 0;
+  await assert.rejects(readSmokeStatusWithRetry(
+    async () => { attempts += 1; throw new TypeError('Failed to fetch'); },
+    () => true, () => {}, async () => {},
+  ), /任务可能仍在运行.*不要重复启动/);
+  assert.equal(attempts, 4);
+
+  attempts = 0;
+  const forbidden = Object.assign(new Error('forbidden'), { status: 403 });
+  await assert.rejects(readSmokeStatusWithRetry(
+    async () => { attempts += 1; throw forbidden; },
+    () => true, () => {}, async () => {},
+  ), (error) => error === forbidden);
+  assert.equal(attempts, 1);
+
+  let current = true;
+  attempts = 0;
+  const cancelled = await readSmokeStatusWithRetry(
+    async () => { attempts += 1; throw Object.assign(new Error('timeout'), { status: 0 }); },
+    () => current, () => {}, async () => { current = false; },
+  );
+  assert.equal(cancelled, null);
+  assert.equal(attempts, 1);
 });
 
 test('completed smoke is accepted directly without creating a paid job', () => {

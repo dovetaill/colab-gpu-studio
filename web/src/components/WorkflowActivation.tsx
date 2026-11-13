@@ -6,7 +6,7 @@ import {
 } from '../lib/gpu-api';
 import {
   activationSmokeParams, appendActivationLog, getActivationStep, getSmokeRuntimeMinutes, hasExistingSmoke,
-  isSmokeCompleted, isSmokePolling, missingActivationInputs, shouldAcceptSmoke, shouldCreateSmoke, smokeIdempotencyKey,
+  isSmokeCompleted, isSmokePolling, missingActivationInputs, readSmokeStatusWithRetry, shouldAcceptSmoke, shouldCreateSmoke, smokeIdempotencyKey,
   terminalSmokeJobId, type ActivationWatch,
 } from '../lib/activation-resume';
 import { resolveGpuCheckRequest, selectEligibleColabGpuSpec } from '../lib/colab-check';
@@ -15,7 +15,7 @@ import { JobHistoryDetails, type JobHistoryDetailRecord } from './JobHistoryDeta
 
 const STEPS_POLL_MS = 6000;
 
-const sleep = (ms: number) => new Promise((resolve) => { window.setTimeout(resolve, ms); });
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => { window.setTimeout(resolve, ms); });
 
 function runtimeText(minutes: number | null): string {
   if (minutes === null) return '运行时长以服务端任务状态为准';
@@ -26,7 +26,14 @@ function runtimeText(minutes: number | null): string {
 function smokeStateText(state: string, minutes: number | null): string {
   const limit = minutes === null ? '' : `，最长 ${Number.isInteger(minutes) ? minutes : minutes.toFixed(1)} 分钟`;
   if (state === 'queued' || state === 'pending') return `冒烟任务已在队列中${limit}`;
+  if (state === 'validating') return '正在校验冒烟参数';
+  if (state === 'waiting_for_capacity') return '正在等待资源或模型缓存准备';
+  if (state === 'allocating') return '正在申请 GPU';
+  if (state === 'preparing') return '正在准备运行时和模型';
+  if (state === 'loading') return '正在加载模型和工作流';
   if (state === 'running') return `冒烟任务正在运行${limit}`;
+  if (state === 'uploading') return '正在保存冒烟输出';
+  if (state === 'cleaning_up' || state === 'cleanup_pending') return '正在确认 GPU 释放，请勿重复启动';
   if (state === 'completed' || state === 'succeeded' || state === 'success') return '冒烟任务已完成，可直接验收';
   return `冒烟任务状态：${state}`;
 }
@@ -76,10 +83,21 @@ export function WorkflowActivationPanel({
   }, []);
 
   const refresh = useCallback(async (token: number): Promise<WorkflowActivation> => {
-    const next = await getWorkflowActivation(workflow.id);
+    let retried = false;
+    const next = await readSmokeStatusWithRetry(
+      () => getWorkflowActivation(workflow.id),
+      () => isCurrent(token),
+      (attempt) => {
+        retried = true;
+        say(`暂时无法读取冒烟状态，正在重试（${attempt}/3）；不会重复启动 GPU。`, token);
+      },
+      sleep,
+    );
+    if (!next) throw new Error('状态读取已取消');
+    if (retried) say('已重新连接，继续读取冒烟状态。', token);
     if (isCurrent(token)) setData(next);
     return next;
-  }, [isCurrent, workflow.id]);
+  }, [isCurrent, say, workflow.id]);
 
   const waitForSmoke = useCallback(async (
     initial: WorkflowActivation,
@@ -326,7 +344,10 @@ export function WorkflowActivationPanel({
   return (
     <div className={styles.activationPanel}>
       <p className="muted small">
-        这一步会真实分配 GPU 跑一次冒烟（{runtimeText(runtimeLimit)}，按实际用量计费）。通过后自动发布并设为当前版本。发布是单独的一步，不会在冒烟排队时一直空转。
+        这一步会真实分配 GPU 跑一次冒烟（{runtimeText(runtimeLimit)}，按实际用量计费）。
+        {workflow.workflow_key === 'wan21-vace-v2v'
+          ? '完成后请先播放结果，确认画面、原声和 GPU 释放，再验收并发布。'
+          : '通过后自动发布并设为当前版本。发布是单独的一步，不会在冒烟排队时一直空转。'}
       </p>
       {workflow.workflow_key === 'wan21-vace-v2v' && needsNewSmoke && <p className="muted small">
         模型：Wan2.1 VACE 1.3B · 目标规格：{spec ? String(spec.gpu || spec.name || JSON.stringify(spec.key)) : '待确认'} · 实际 GPU：申请后确认。
